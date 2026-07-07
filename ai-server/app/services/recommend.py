@@ -1,7 +1,8 @@
 """다음 식사 추천 서비스 (POST /internal/recommend).
 
-daily_summary 는 Backend 가 계산해서 넘겨준다. AI Server 는 이를 프롬프트에 넣어
-LLM 으로 추천 메뉴 3개를 생성한다. 진단/치료/처방 표현은 프롬프트에서 금지한다.
+Backend 가 daily_summary 와 함께 **미리 필터링한 후보 메뉴(candidates)** 를 넘겨준다.
+LLM 은 그 후보 안에서만 3개를 고르고 reason 만 생성한다(hallucination·칼로리 오차 방지).
+name/category/estimated_calories 는 LLM 값이 아니라 후보 원본 값으로 복원한다.
 
 실패 사유(reason): ai_timeout | invalid_response | provider_error
 """
@@ -16,11 +17,23 @@ from ..utils.logger import build_ai_call_log, logger
 from ..utils.validator import GeminiResponseError, extract_text, parse_json_response
 
 CAUTION_TEXT = "추천은 생활 식단 참고용이며 의학적 조언이 아닙니다."
+# 후보로 채워 넣을 때(LLM 미선택) 사용하는 고정 reason.
+FALLBACK_REASON = "오늘 식단과 균형 있게 어울려요."
 
 
 def _build_prompt(req: RecommendRequest) -> str:
     s = req.daily_summary
-    return f"""당신은 사용자의 오늘 식단을 참고해 다음 끼니 메뉴를 추천하는 도우미입니다.
+
+    candidate_lines = []
+    for i, c in enumerate(req.candidates, start=1):
+        hint = f" (참고 힌트: {c.score_reason_hint})" if c.score_reason_hint else ""
+        candidate_lines.append(
+            f'{i}. name="{c.name}", category="{c.category}", '
+            f"estimated_calories={c.estimated_calories}{hint}"
+        )
+    candidates_block = "\n".join(candidate_lines) if candidate_lines else "(후보 없음)"
+
+    return f"""당신은 사용자의 오늘 식단을 참고해, 주어진 후보 메뉴 중에서 다음 끼니를 골라주는 도우미입니다.
 
 [오늘 섭취 요약]
 - 칼로리: {s.total_calories} / 목표 {s.goal_calories} kcal
@@ -32,40 +45,72 @@ def _build_prompt(req: RecommendRequest) -> str:
 - 선호 카테고리: {req.preferred_category}
 - 끼니: {req.meal_timing}
 
+[후보 메뉴 목록] — 반드시 이 목록 안에서만 선택하세요.
+{candidates_block}
+
 반드시 아래 JSON 형식으로만 응답하세요. JSON 외의 다른 텍스트는 절대 포함하지 마세요.
 
 {{
   "recommendations": [
-    {{"name": "닭가슴살 샐러드", "category": "{req.preferred_category}", "estimated_calories": 320, "reason": "오늘 부족한 단백질을 보충하기 좋아요."}}
+    {{"name": "후보 목록에 있는 name 그대로", "reason": "선택 이유"}}
   ]
 }}
 
 규칙:
-- 정확히 3개의 메뉴를 추천하세요.
-- name 은 한국어로 작성하세요.
-- category 는 "{req.preferred_category}" 로 설정하세요.
-- reason 은 오늘 식단에서 부족하거나 넘치는 영양소를 근거로 1~2문장, 친근한 말투로 작성하세요.
+- 위 후보 목록 안에서만 정확히 3개를 선택하세요. 목록에 없는 메뉴를 지어내지 마세요.
+- name 은 후보 목록의 값을 **글자 그대로** 사용하고, 임의로 바꾸거나 새로 만들지 마세요.
+- category 와 estimated_calories 는 후보 원본 값을 쓰므로 응답에 포함하지 않아도 됩니다.
+- reason 은 오늘 식단 요약(부족·과잉 영양소)을 근거로, 해당 후보에 참고 힌트가 있으면
+  그 힌트를 활용해 1~2문장, 친근한 말투의 한국어로 작성하세요.
 - 진단/치료/처방/의학적 효능 관련 표현(예: 질병을 치료, 처방, 증상 완화)은 절대 사용하지 마세요.
 - 생활 식단 참고 수준의 표현만 사용하세요.
 """
 
 
-def _normalize_recommendations(raw: list, fallback_category: str) -> list[dict]:
+def _normalize_recommendations(raw: list, candidates: list) -> list[dict]:
+    """LLM 선택을 후보 목록으로 검증·복원하고, 부족하면 후보로 채워 항상 3개를 목표로 한다.
+
+    - candidates 에 없는 name 은 제외.
+    - 통과 항목도 category/estimated_calories 는 후보 원본 값으로 덮어쓴다(원본 신뢰).
+    - 3개 미만이면 아직 선택되지 않은 후보를 순서대로(점수순 가정) 채우고 reason 은 고정 문구.
+    """
+    by_name = {c.name: c for c in candidates}
+    used: set[str] = set()
     result: list[dict] = []
-    for item in raw[:3]:
+
+    def _add(src, reason: str) -> None:
+        used.add(src.name)
+        result.append(
+            {
+                "name": src.name,
+                "category": src.category,
+                "estimated_calories": float(src.estimated_calories),
+                "reason": reason,
+            }
+        )
+
+    # 1) LLM 이 고른 항목: 후보에 존재 + 미중복만 채택, 원본 값으로 복원
+    for item in raw:
+        if len(result) >= 3:
+            break
         if not isinstance(item, dict):
             continue
-        try:
-            result.append(
-                {
-                    "name": str(item["name"]),
-                    "category": str(item.get("category", fallback_category)),
-                    "estimated_calories": float(item.get("estimated_calories", 0.0)),
-                    "reason": str(item.get("reason", "")),
-                }
-            )
-        except (KeyError, TypeError, ValueError):
+        name = str(item.get("name", "")).strip()
+        src = by_name.get(name)
+        if src is None or name in used:
             continue
+        reason = str(item.get("reason", "")).strip() or FALLBACK_REASON
+        _add(src, reason)
+
+    # 2) 부족분은 남은 후보를 순서대로 채움(고정 reason)
+    if len(result) < 3:
+        for src in candidates:
+            if len(result) >= 3:
+                break
+            if src.name in used:
+                continue
+            _add(src, FALLBACK_REASON)
+
     return result
 
 
@@ -107,7 +152,7 @@ async def recommend(req: RecommendRequest) -> dict:
         return fail(exc.reason)
 
     recommendations = _normalize_recommendations(
-        data.get("recommendations", []) or [], req.preferred_category
+        data.get("recommendations", []) or [], req.candidates
     )
     if not recommendations:
         return fail("invalid_response")
