@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# 테스트 (SCRUM-30)
+pytest==8.3.4

@@ -22,11 +22,20 @@ class Settings:
         self.image_download_timeout_seconds: float = float(
             os.getenv("IMAGE_DOWNLOAD_TIMEOUT_SECONDS", "10")
         )
+        # 내부 호출 인증(opt-in). 비어 있으면 검증하지 않는다(하위 호환).
+        # 값이 설정되면 /internal/* 는 X-Internal-Token 헤더가 일치해야 한다.
+        self.internal_token: str = os.getenv("INTERNAL_TOKEN", "")
 
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def is_gemini_configured() -> bool:
+    """readiness 판단용. API Key 가 실제 값으로 설정됐는지 여부."""
+    key = get_settings().gemini_api_key
+    return bool(key) and key != "your_gemini_api_key_here"
 
 
 def configure_gemini() -> None:
