@@ -74,8 +74,8 @@ def set_candidates(monkeypatch):
     def _apply(rows=None, exc: Optional[Exception] = None) -> dict:
         calls: dict = {}
 
-        def fake_fetch(category: str, limit: int = 10):
-            calls["category"] = category
+        def fake_fetch(categories, limit: int = 10):
+            calls["categories"] = categories
             if exc is not None:
                 raise exc
             return rows or []

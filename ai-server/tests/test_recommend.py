@@ -52,11 +52,13 @@ def test_success_picks_from_db_candidates(client, set_candidates, set_gemini):
     assert all(r["category"] == "convenience_store" for r in body["recommendations"])
 
 
-def test_category_is_mapped_to_korean(client, set_candidates, set_gemini):
+def test_category_is_mapped_to_db_groups(client, set_candidates, set_gemini):
     calls = set_candidates(DB_ROWS)
     set_gemini(text=_llm([{"name": "참치김밥", "reason": "x"}]))
     _recommend(client)
-    assert calls["category"] == "편의점"  # convenience_store → 편의점 매핑
+    # convenience_store → [편의점, 간식, 음료] 묶음으로 매핑
+    assert "편의점" in calls["categories"]
+    assert set(calls["categories"]) == {"편의점", "간식", "음료"}
 
 
 def test_hallucinated_name_filtered_and_backfilled(client, set_candidates, set_gemini):

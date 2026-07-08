@@ -21,25 +21,19 @@ CAUTION_TEXT = "추천은 생활 식단 참고용이며 의학적 조언이 아�
 # 후보로 채워 넣을 때(LLM 미선택) 사용하는 고정 reason.
 FALLBACK_REASON = "오늘 식단과 균형 있게 어울려요."
 
-# 요청 preferred_category(영문 enum) → nutrition_items.category(한글) 매핑.
-# 매핑에 없으면 값을 그대로 사용(한글 카테고리를 직접 넘긴 경우 대비).
-_CATEGORY_TO_DB = {
-    "convenience_store": "편의점",
-    "delivery": "배달",
-    "dining_out": "외식",
-    "restaurant": "외식",
-    "korean": "한식",
-    "chinese": "중식",
-    "snack": "분식",
-    "noodle": "면류",
-    "salad": "샐러드",
-    "dessert": "간식",
-    "beverage": "음료",
+# 요청 preferred_category(BE enum: 구매 채널) → nutrition_items.category(한글 요리종류) 묶음 매핑.
+# "밖에서 사먹는/집에서 해먹는" 기준으로 여러 DB 카테고리를 한 채널에 묶는다.
+# 매핑에 없으면 값을 그대로 단일 카테고리로 사용(한글 카테고리를 직접 넘긴 경우 대비).
+_CATEGORY_TO_DB_GROUPS = {
+    "convenience_store": ["편의점", "간식", "음료"],   # 편의점에서 바로 사먹는 것
+    "delivery": ["배달", "중식"],                      # 배달로 시켜먹는 것(중국집 등)
+    "eating_out": ["외식", "면류", "분식"],            # 밖에서/식당에서 사먹는 것
+    "home_meal": ["한식", "샐러드"],                   # 집에서 해먹는 것
 }
 
 
-def _db_category(preferred_category: str) -> str:
-    return _CATEGORY_TO_DB.get(preferred_category, preferred_category)
+def _db_categories(preferred_category: str) -> list:
+    return _CATEGORY_TO_DB_GROUPS.get(preferred_category, [preferred_category])
 
 
 def _build_prompt(req: RecommendRequest, candidates: list) -> str:
@@ -154,7 +148,7 @@ async def recommend(req: RecommendRequest) -> dict:
     # 1) 후보 메뉴를 DB(nutrition_items)에서 조회 (읽기 전용)
     try:
         rows = await asyncio.to_thread(
-            fetch_candidate_menus, _db_category(req.preferred_category)
+            fetch_candidate_menus, _db_categories(req.preferred_category)
         )
     except Exception as exc:  # noqa: BLE001 - DB 접근 오류
         logger.warning("후보 DB 조회 실패: %s", exc)
