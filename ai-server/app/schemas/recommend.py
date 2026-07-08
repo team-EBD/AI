@@ -1,9 +1,12 @@
 """/internal/recommend 요청/응답 스키마.
 
 [합의 결과]
-- daily_summary: Backend가 직접 계산해서 넘겨준다(AI Server는 DB/Backend 재호출 안 함).
+- daily_summary: Backend가 직접 계산해서 넘겨준다.
+- 후보 메뉴(candidates): AI Server 가 DB(nutrition_items)에서 직접 조회한다.
+  LLM 은 그 후보 안에서만 3개를 고르고 reason 만 생성한다(hallucination·칼로리 오차 방지).
+  → 요청에는 candidates 를 넣지 않는다(AI 가 preferred_category 로 조회).
 """
-from typing import List, Literal
+from typing import Any, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -19,10 +22,24 @@ class DailySummary(BaseModel):
     goal_protein: float
 
 
+class CandidateMenu(BaseModel):
+    """DB(nutrition_items)에서 조회한 후보 메뉴. name/category/estimated_calories 는
+    원본(신뢰) 데이터이며, LLM 이 바꾸지 못하고 응답에서 이 값으로 복원된다.
+    요청 스키마가 아니라 서비스 내부에서 후보를 표현하는 데 쓴다."""
+
+    name: str
+    category: str
+    estimated_calories: int
+    # 후보 선정 힌트(선택). reason 근거로 활용. 현재 DB 조회 경로에서는 미사용.
+    score_reason_hint: Optional[str] = None
+
+
 class RecommendRequest(BaseModel):
     daily_summary: DailySummary
     preferred_category: str = Field(..., description="예: convenience_store")
     meal_timing: str = Field(..., description="예: dinner")
+    # Phase 2 용 자리(선택). 지금은 비어 있어도 동작에 문제 없음.
+    user_history_context: Optional[Any] = None
 
 
 class Recommendation(BaseModel):

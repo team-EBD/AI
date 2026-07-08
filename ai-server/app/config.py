@@ -25,6 +25,9 @@ class Settings:
         # 내부 호출 인증(opt-in). 비어 있으면 검증하지 않는다(하위 호환).
         # 값이 설정되면 /internal/* 는 X-Internal-Token 헤더가 일치해야 한다.
         self.internal_token: str = os.getenv("INTERNAL_TOKEN", "")
+        # recommend 후보 조회용 DB(읽기 전용). BE 와 동일한 Postgres 를 가리킨다.
+        # 예: postgresql+psycopg://eatlog:eatlog@localhost:5432/eatlog
+        self.database_url: str = os.getenv("DATABASE_URL", "")
 
 
 @lru_cache

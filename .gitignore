@@ -1,6 +1,9 @@
 # macOS
 .DS_Store
 
+# 에디터
+*.code-workspace
+
 # Claude Code 로컬 설정 / 개인 툴 설정
 .claude/
 .mcp.json
