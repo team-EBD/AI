@@ -25,10 +25,10 @@ def get_engine() -> Engine:
     return _engine
 
 
-# 원본 신뢰 데이터만 조회 (name/calories). categories 는 매핑된 DB 카테고리 묶음.
+# 원본 신뢰 데이터 조회. 스코어링을 위해 protein·category 까지 함께 가져온다.
 _CANDIDATE_SQL = text(
     """
-    SELECT name, calories
+    SELECT name, calories, protein, category
     FROM nutrition_items
     WHERE category IN :categories
     ORDER BY id
@@ -37,13 +37,22 @@ _CANDIDATE_SQL = text(
 ).bindparams(bindparam("categories", expanding=True))
 
 
-def fetch_candidate_menus(categories: List[str], limit: int = 10) -> List[dict]:
-    """주어진 DB 카테고리 묶음에 속하는 후보 메뉴를 [{name, calories}, ...] 로 반환.
+def fetch_candidate_menus(categories: List[str], limit: int = 50) -> List[dict]:
+    """주어진 DB 카테고리 묶음에 속하는 후보 메뉴를 반환.
 
+    각 항목: {name, calories, protein, category}. 스코어링은 상위(서비스)에서 수행한다.
     DB 접근 오류는 상위(recommend 서비스)에서 잡아 실패 응답으로 변환한다.
     """
     if not categories:
         return []
     with get_engine().connect() as conn:
         rows = conn.execute(_CANDIDATE_SQL, {"categories": categories, "limit": limit})
-        return [{"name": r.name, "calories": float(r.calories)} for r in rows]
+        return [
+            {
+                "name": r.name,
+                "calories": float(r.calories),
+                "protein": float(r.protein),
+                "category": r.category,
+            }
+            for r in rows
+        ]

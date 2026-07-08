@@ -2,14 +2,20 @@
 import asyncio
 import json
 
-from app.services.recommend import FALLBACK_REASON
+from app.schemas.recommend import DailySummary
+from app.services.recommend import (
+    FALLBACK_REASON,
+    _nutrition_gaps,
+    _score_candidate,
+    _select_candidates,
+)
 
-# DB(nutrition_items) 조회 결과를 흉내낸 행들
+# DB(nutrition_items) 조회 결과를 흉내낸 행들 (name/calories/protein/category)
 DB_ROWS = [
-    {"name": "닭가슴살 샐러드", "calories": 320},
-    {"name": "참치김밥", "calories": 340},
-    {"name": "불고기 도시락", "calories": 700},
-    {"name": "프로틴 음료", "calories": 180},
+    {"name": "닭가슴살 샐러드", "calories": 320, "protein": 30, "category": "편의점"},
+    {"name": "참치김밥", "calories": 340, "protein": 12, "category": "편의점"},
+    {"name": "불고기 도시락", "calories": 700, "protein": 28, "category": "편의점"},
+    {"name": "프로틴 음료", "calories": 180, "protein": 25, "category": "편의점"},
 ]
 
 REQ = {
@@ -141,3 +147,29 @@ def test_always_200_even_on_failure(client, set_candidates, set_gemini):
     set_candidates(DB_ROWS)
     set_gemini(exc=asyncio.TimeoutError())
     assert _recommend(client).status_code == 200
+
+
+# --- 스코어링(후보 선별) 단위 테스트 ---
+
+def _summary(**kw):
+    base = dict(total_calories=1820, total_carbs=210, total_protein=95,
+                total_fat=60, goal_calories=2000, goal_protein=120)
+    base.update(kw)
+    return DailySummary(**base)
+
+
+def test_scoring_prefers_calorie_fit():
+    # 남은 칼로리 180 → 적게 남았을 때 크게 초과하는 후보는 낮은 점수
+    gaps = _nutrition_gaps(_summary())  # remaining 180
+    fit = _score_candidate(150, 10, "편의점", gaps, "dinner")
+    over = _score_candidate(700, 30, "편의점", gaps, "dinner")
+    assert fit > over
+
+
+def test_select_orders_by_score_and_caps_topN():
+    # 남은 칼로리가 적으면(180) 저칼로리 후보가 상위로
+    cands = _select_candidates(DB_ROWS, _summary(), "dinner", "convenience_store")
+    names = [c.name for c in cands]
+    # 700kcal 불고기 도시락은 큰 초과 → 마지막쯤
+    assert names[0] != "불고기 도시락"
+    assert all(c.score_reason_hint for c in cands)  # 힌트 채워짐

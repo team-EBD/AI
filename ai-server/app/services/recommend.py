@@ -1,9 +1,12 @@
 """다음 식사 추천 서비스 (POST /internal/recommend).
 
-[합의 변경] 후보 메뉴는 AI Server 가 DB(nutrition_items)에서 preferred_category 로
-직접 조회한다. LLM 은 그 후보 안에서만 3개를 고르고 reason 만 생성한다
-(hallucination·칼로리 오차 방지). name/estimated_calories 는 DB 원본 값으로 복원한다.
+흐름:
+  1) preferred_category(구매 채널) → DB 카테고리 묶음으로 nutrition_items 조회
+  2) 영양 갭(남은 칼로리 우선) + 끼니(meal_timing)로 스코어링 → 상위 N개만 추림
+  3) LLM 은 추려진 후보 안에서만 3개를 고르고 reason 만 생성(hallucination·칼로리 오차 방지)
+  4) name/category/estimated_calories 는 DB 원본 값으로 복원
 
+AI Server 는 후보를 요청으로 받지 않고 DB 에서 직접 조회하되, DB 에 쓰지는 않는다.
 실패 사유(reason): ai_timeout | invalid_response | provider_error | no_candidates
 """
 import asyncio
@@ -34,6 +37,76 @@ _CATEGORY_TO_DB_GROUPS = {
 
 def _db_categories(preferred_category: str) -> list:
     return _CATEGORY_TO_DB_GROUPS.get(preferred_category, [preferred_category])
+
+
+# 끼니별로 흔히 먹는 DB 카테고리(휴리스틱 가정). 실제 데이터(meal_records) 분석 전까지 임시.
+# 스코어링에서 소폭 가산점으로만 쓰인다(채널 필터는 preferred_category 가 담당).
+_MEAL_TIMING_CATEGORIES = {
+    "lunch": {"편의점", "분식", "면류", "샐러드", "간식"},
+    "dinner": {"한식", "배달", "중식", "외식"},
+}
+
+# LLM 에 넘길 상위 후보 수(스코어링 후 상위 N개만 전달).
+_TOP_N = 8
+
+
+def _score_candidate(cal: float, protein: float, db_category, gaps: dict, meal_timing: str) -> float:
+    """남은 칼로리 적합도를 우선하고, 단백질 부족·끼니 패턴을 보조로 가산한 점수."""
+    remaining = gaps["remaining_cal"]
+    if remaining <= 0:
+        # 이미 목표 도달/초과 → 낮은 칼로리일수록 좋음
+        score = -cal
+    else:
+        over = max(0.0, cal - remaining)   # 초과분은 크게 감점(과식 방지)
+        under = max(0.0, remaining - cal)  # 미달분은 약하게 감점
+        score = -(over * 2.0 + under * 0.5)
+    # 단백질 부족 시 고단백 후보 보조 가산
+    if gaps["protein_gap"] > 0:
+        score += protein * 1.5
+    # 끼니 전형 카테고리면 소폭 가산
+    if db_category in _MEAL_TIMING_CATEGORIES.get(meal_timing, set()):
+        score += 30.0
+    return score
+
+
+def _make_hint(cal: float, protein: float, gaps: dict) -> str:
+    """스코어링 근거를 LLM reason 작성용 힌트로 요약."""
+    remaining = gaps["remaining_cal"]
+    if remaining > 0 and cal <= remaining:
+        hint = "남은 칼로리에 잘 맞아요"
+    else:
+        hint = "칼로리 여유가 적어 가볍게 즐기기 좋아요"
+    if gaps["protein_gap"] > 0 and protein >= 15:
+        hint += ", 단백질 보충에도 좋아요"
+    return hint
+
+
+def _nutrition_gaps(summary) -> dict:
+    return {
+        "remaining_cal": summary.goal_calories - summary.total_calories,
+        "protein_gap": summary.goal_protein - summary.total_protein,
+    }
+
+
+def _select_candidates(rows: list, summary, meal_timing: str, preferred_category: str) -> list:
+    """DB 후보를 영양갭·끼니로 스코어링 → 상위 N개를 CandidateMenu(힌트 포함)로."""
+    gaps = _nutrition_gaps(summary)
+    scored = []
+    for r in rows:
+        cal = float(r["calories"])
+        protein = float(r.get("protein") or 0)
+        score = _score_candidate(cal, protein, r.get("category"), gaps, meal_timing)
+        scored.append((score, r, cal, _make_hint(cal, protein, gaps)))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [
+        CandidateMenu(
+            name=str(r["name"]),
+            category=preferred_category,  # 응답 category 는 요청값으로 통일
+            estimated_calories=int(round(cal)),
+            score_reason_hint=hint,
+        )
+        for _, r, cal, hint in scored[:_TOP_N]
+    ]
 
 
 def _build_prompt(req: RecommendRequest, candidates: list) -> str:
@@ -154,20 +227,17 @@ async def recommend(req: RecommendRequest) -> dict:
         logger.warning("후보 DB 조회 실패: %s", exc)
         return fail("provider_error")
 
-    candidates = [
-        CandidateMenu(
-            name=str(r["name"]),
-            category=req.preferred_category,  # 응답 category 는 요청값으로 통일
-            estimated_calories=int(round(float(r["calories"]))),
-        )
-        for r in rows
-    ]
-    if not candidates:
+    if not rows:
         # 해당 카테고리에 후보가 없음 → Gemini 호출 없이 실패
         logger.info("추천 후보 없음 (category=%s)", req.preferred_category)
         return fail("no_candidates")
 
-    # 2) LLM 으로 후보 중 선택 + reason 생성
+    # 2) 영양 갭 + 끼니로 스코어링해 상위 후보만 추림
+    candidates = _select_candidates(
+        rows, req.daily_summary, req.meal_timing, req.preferred_category
+    )
+
+    # 3) LLM 으로 추려진 후보 중 선택 + reason 생성
     try:
         model = genai.GenerativeModel(
             settings.gemini_model,
