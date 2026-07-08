@@ -64,6 +64,31 @@ def set_gemini(monkeypatch):
 
 
 @pytest.fixture
+def set_candidates(monkeypatch):
+    """recommend 서비스의 DB 후보 조회(fetch_candidate_menus)를 대체.
+
+    rows=[{"name":..., "calories":...}] 를 돌려주거나 exc 를 던진다.
+    반환하는 dict 의 "category" 로 조회에 넘어간 (매핑된) 카테고리를 확인할 수 있다.
+    """
+
+    def _apply(rows=None, exc: Optional[Exception] = None) -> dict:
+        calls: dict = {}
+
+        def fake_fetch(category: str, limit: int = 10):
+            calls["category"] = category
+            if exc is not None:
+                raise exc
+            return rows or []
+
+        import app.services.recommend as recommend_mod
+
+        monkeypatch.setattr(recommend_mod, "fetch_candidate_menus", fake_fetch)
+        return calls
+
+    return _apply
+
+
+@pytest.fixture
 def stub_download(monkeypatch):
     """이미지 다운로드를 성공(더미 바이트)으로 대체하거나, 예외를 던지게 한다."""
 

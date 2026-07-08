@@ -6,8 +6,10 @@ Backend 의 internal 요청을 받아 **Gemini API** 로 음식 분석 / 식사 
 Frontend → Backend → [AI Server] → Gemini API
 ```
 
-AI Server 는 **DB 에 직접 접근하지 않는다.** 모든 데이터는 Backend 가 요청으로 넘겨주고,
+AI Server 는 DB 에 **쓰기를 하지 않으며**, 대부분의 데이터는 Backend 가 요청으로 넘겨주고
 결과(및 `ai_call_log`)를 응답으로 돌려받아 Backend 가 DB 에 저장한다.
+단, **recommend 후보 메뉴만은 AI Server 가 DB(`nutrition_items`)를 읽기 전용으로 직접 조회**한다
+(팀 합의 변경). `DATABASE_URL` 필요.
 
 ## 실행
 
@@ -45,8 +47,9 @@ docker run --env-file .env -p 8000:8000 eatlog-ai
 | --- | --- |
 | `ai_timeout` | Gemini 응답 timeout (기본 15초, `.env` 조정) |
 | `invalid_response` | JSON 파싱/구조 검증 실패 |
-| `provider_error` | 이미지 다운로드 실패 / Gemini API 오류 |
+| `provider_error` | 이미지 다운로드 실패 / Gemini API 오류 / (recommend) DB 조회 실패 |
 | `not_food` | 음식이 아닌 사진 (candidates 빈 배열) |
+| `no_candidates` | (recommend) 해당 카테고리에 DB 후보가 없음 |
 
 analyze 실패 응답에는 `fallback_action: "manual_food_search"` 가 함께 반환된다.
 
@@ -59,8 +62,9 @@ analyze 실패 응답에는 `fallback_action: "manual_food_search"` 가 함께 �
 | 이미지 전달 방식 | **image_url** | AI Server 가 httpx 로 다운로드 후 Gemini 전달 |
 | 식습관 보정 계산 | **Backend 담당** | AI Server 는 raw 후보만 반환, `habit_adjusted` 없음 |
 | `user_eating_habits` 전달 | optional 수용·무시 | 보정이 Backend 이므로 AI Server 미사용 |
-| `daily_summary` | **Backend 가 계산해 전달** | AI Server 는 DB/Backend 재호출 안 함 |
-| `ai_call_log` | **응답에 포함** | AI Server 는 DB 접근 없음 → Backend 가 저장 |
+| `daily_summary` | **Backend 가 계산해 전달** | recommend 요청으로 받음 |
+| recommend 후보(candidates) | **AI Server 가 DB 직접 조회** | `nutrition_items` 를 `preferred_category` 로 필터(읽기 전용) |
+| `ai_call_log` | **응답에 포함** | AI Server 는 DB 에 쓰지 않음 → Backend 가 저장 |
 | `fallback_action` | **AI Server 가 결정** | 실패 시 `manual_food_search` |
 | 실패 시 HTTP 상태 | **200 + status=failed** | 명세서 권장 |
 | Gemini 모델 | **최신 flash (`gemini-2.5-flash`)** | `.env` 로 교체 가능, `model_name` 에 반영 |

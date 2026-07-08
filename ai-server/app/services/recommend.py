@@ -1,10 +1,10 @@
 """다음 식사 추천 서비스 (POST /internal/recommend).
 
-Backend 가 daily_summary 와 함께 **미리 필터링한 후보 메뉴(candidates)** 를 넘겨준다.
-LLM 은 그 후보 안에서만 3개를 고르고 reason 만 생성한다(hallucination·칼로리 오차 방지).
-name/category/estimated_calories 는 LLM 값이 아니라 후보 원본 값으로 복원한다.
+[합의 변경] 후보 메뉴는 AI Server 가 DB(nutrition_items)에서 preferred_category 로
+직접 조회한다. LLM 은 그 후보 안에서만 3개를 고르고 reason 만 생성한다
+(hallucination·칼로리 오차 방지). name/estimated_calories 는 DB 원본 값으로 복원한다.
 
-실패 사유(reason): ai_timeout | invalid_response | provider_error
+실패 사유(reason): ai_timeout | invalid_response | provider_error | no_candidates
 """
 import asyncio
 import time
@@ -12,7 +12,8 @@ import time
 import google.generativeai as genai
 
 from ..config import get_settings
-from ..schemas.recommend import RecommendRequest
+from ..db import fetch_candidate_menus
+from ..schemas.recommend import CandidateMenu, RecommendRequest
 from ..utils.logger import build_ai_call_log, logger
 from ..utils.validator import GeminiResponseError, extract_text, parse_json_response
 
@@ -20,12 +21,32 @@ CAUTION_TEXT = "추천은 생활 식단 참고용이며 의학적 조언이 아�
 # 후보로 채워 넣을 때(LLM 미선택) 사용하는 고정 reason.
 FALLBACK_REASON = "오늘 식단과 균형 있게 어울려요."
 
+# 요청 preferred_category(영문 enum) → nutrition_items.category(한글) 매핑.
+# 매핑에 없으면 값을 그대로 사용(한글 카테고리를 직접 넘긴 경우 대비).
+_CATEGORY_TO_DB = {
+    "convenience_store": "편의점",
+    "delivery": "배달",
+    "dining_out": "외식",
+    "restaurant": "외식",
+    "korean": "한식",
+    "chinese": "중식",
+    "snack": "분식",
+    "noodle": "면류",
+    "salad": "샐러드",
+    "dessert": "간식",
+    "beverage": "음료",
+}
 
-def _build_prompt(req: RecommendRequest) -> str:
+
+def _db_category(preferred_category: str) -> str:
+    return _CATEGORY_TO_DB.get(preferred_category, preferred_category)
+
+
+def _build_prompt(req: RecommendRequest, candidates: list) -> str:
     s = req.daily_summary
 
     candidate_lines = []
-    for i, c in enumerate(req.candidates, start=1):
+    for i, c in enumerate(candidates, start=1):
         hint = f" (참고 힌트: {c.score_reason_hint})" if c.score_reason_hint else ""
         candidate_lines.append(
             f'{i}. name="{c.name}", category="{c.category}", '
@@ -130,13 +151,36 @@ async def recommend(req: RecommendRequest) -> dict:
             ),
         }
 
+    # 1) 후보 메뉴를 DB(nutrition_items)에서 조회 (읽기 전용)
+    try:
+        rows = await asyncio.to_thread(
+            fetch_candidate_menus, _db_category(req.preferred_category)
+        )
+    except Exception as exc:  # noqa: BLE001 - DB 접근 오류
+        logger.warning("후보 DB 조회 실패: %s", exc)
+        return fail("provider_error")
+
+    candidates = [
+        CandidateMenu(
+            name=str(r["name"]),
+            category=req.preferred_category,  # 응답 category 는 요청값으로 통일
+            estimated_calories=int(round(float(r["calories"]))),
+        )
+        for r in rows
+    ]
+    if not candidates:
+        # 해당 카테고리에 후보가 없음 → Gemini 호출 없이 실패
+        logger.info("추천 후보 없음 (category=%s)", req.preferred_category)
+        return fail("no_candidates")
+
+    # 2) LLM 으로 후보 중 선택 + reason 생성
     try:
         model = genai.GenerativeModel(
             settings.gemini_model,
             generation_config={"response_mime_type": "application/json"},
         )
         response = await asyncio.wait_for(
-            model.generate_content_async(_build_prompt(req)),
+            model.generate_content_async(_build_prompt(req, candidates)),
             timeout=settings.ai_timeout_seconds,
         )
     except asyncio.TimeoutError:
@@ -152,7 +196,7 @@ async def recommend(req: RecommendRequest) -> dict:
         return fail(exc.reason)
 
     recommendations = _normalize_recommendations(
-        data.get("recommendations", []) or [], req.candidates
+        data.get("recommendations", []) or [], candidates
     )
     if not recommendations:
         return fail("invalid_response")
