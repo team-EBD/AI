@@ -27,7 +27,18 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
 
 {
   "candidates": [
-    {"food_name": "김치찌개", "confidence": 0.87, "estimated_serving": 1.0}
+    {
+      "food_name": "김치찌개",
+      "confidence": 0.87,
+      "estimated_serving": 1.0,
+      "nutrition": {
+        "base_serving": "1인분(400g)",
+        "calories": 320,
+        "carbs": 18.5,
+        "protein": 22.0,
+        "fat": 16.0
+      }
+    }
   ]
 }
 
@@ -35,6 +46,9 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
 - food_name 은 반드시 한국어로 작성하세요.
 - confidence 는 0.0~1.0 사이의 확신도입니다.
 - estimated_serving 은 1인분을 1.0 기준으로 한 추정 섭취량입니다.
+- nutrition 은 해당 음식 1인분 기준의 영양 추정치입니다. base_serving 은
+  기준량 설명(예: "1인분(400g)"), calories 는 kcal, carbs/protein/fat 은 g 단위입니다.
+  일반적인 한국 음식 기준으로 현실적인 값을 추정하세요.
 - 후보는 가능성이 높은 순서로 최대 3개까지만 포함하세요.
 - 사진에 음식이 없거나 음식이 아니면 candidates 를 반드시 빈 배열([])로 반환하세요.
 """
@@ -64,6 +78,29 @@ async def _download_image(url: str, timeout: float, max_bytes: int) -> tuple[byt
         return resp.content, content_type
 
 
+def _normalize_nutrition(raw) -> dict | None:
+    """LLM 영양 추정치 검증. 형식이 어긋나면 후보는 유지하되 nutrition 만
+    버린다(None) — BE 가 영양 DB 매칭으로 보완할 수 있다."""
+    if not isinstance(raw, dict):
+        return None
+    try:
+        nutrition = {
+            "base_serving": str(raw.get("base_serving") or "1인분"),
+            "calories": float(raw["calories"]),
+            "carbs": float(raw["carbs"]),
+            "protein": float(raw["protein"]),
+            "fat": float(raw["fat"]),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+    if any(nutrition[key] < 0 for key in ("calories", "carbs", "protein", "fat")):
+        return None
+    # 비현실적 추정치 방어 (1인분 10,000 kcal 초과 등)
+    if nutrition["calories"] > 10_000:
+        return None
+    return nutrition
+
+
 def _normalize_candidates(raw: list) -> list[dict]:
     normalized: list[dict] = []
     for item in raw[:3]:
@@ -75,6 +112,7 @@ def _normalize_candidates(raw: list) -> list[dict]:
                     "food_name": str(item["food_name"]),
                     "confidence": float(item.get("confidence", 0.0)),
                     "estimated_serving": float(item.get("estimated_serving", 1.0)),
+                    "nutrition": _normalize_nutrition(item.get("nutrition")),
                 }
             )
         except (KeyError, TypeError, ValueError):

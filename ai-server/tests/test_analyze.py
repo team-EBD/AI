@@ -137,3 +137,63 @@ def test_download_within_limit_succeeds(client, set_gemini, stub_http_get):
     )
     body = _analyze(client).json()
     assert body["status"] == "success"
+
+
+def test_nutrition_estimate_passthrough(client, set_gemini, stub_download):
+    """LLM 영양 추정치가 응답 candidates 에 그대로 실린다."""
+    stub_download()
+    set_gemini(
+        text=json.dumps(
+            {
+                "candidates": [
+                    {
+                        "food_name": "크림새우",
+                        "confidence": 0.95,
+                        "estimated_serving": 1.0,
+                        "nutrition": {
+                            "base_serving": "1인분(250g)",
+                            "calories": 520,
+                            "carbs": 32.0,
+                            "protein": 24.0,
+                            "fat": 33.0,
+                        },
+                    }
+                ]
+            }
+        )
+    )
+    body = _analyze(client).json()
+    assert body["status"] == "success"
+    nutrition = body["candidates"][0]["nutrition"]
+    assert nutrition["calories"] == 520
+    assert nutrition["base_serving"] == "1인분(250g)"
+
+
+def test_nutrition_missing_or_invalid_kept_as_none(client, set_gemini, stub_download):
+    """nutrition 이 없거나 형식이 틀려도 후보는 유지되고 nutrition 만 None."""
+    stub_download()
+    set_gemini(
+        text=json.dumps(
+            {
+                "candidates": [
+                    {"food_name": "양꼬치", "confidence": 0.85, "estimated_serving": 1.0},
+                    {
+                        "food_name": "오이무침",
+                        "confidence": 0.9,
+                        "estimated_serving": 1.0,
+                        "nutrition": {"calories": -10, "carbs": 1, "protein": 1, "fat": 1},
+                    },
+                    {
+                        "food_name": "제육볶음",
+                        "confidence": 0.8,
+                        "estimated_serving": 1.0,
+                        "nutrition": {"calories": "많이"},
+                    },
+                ]
+            }
+        )
+    )
+    body = _analyze(client).json()
+    assert body["status"] == "success"
+    assert [c["food_name"] for c in body["candidates"]] == ["양꼬치", "오이무침", "제육볶음"]
+    assert all(c["nutrition"] is None for c in body["candidates"])

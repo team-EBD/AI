@@ -2,8 +2,9 @@
 
 [합의 결과]
 - 이미지 전달: image_url (Backend가 URL로 전달, AI Server가 다운로드)
-- 식습관 보정: Backend 담당. 따라서 AI Server 응답에는 habit_adjusted 를 포함하지 않고,
-  candidates 는 raw 후보(food_name/confidence/estimated_serving)만 반환한다.
+- 식습관 보정: Backend 담당. 따라서 AI Server 응답에는 habit_adjusted 를 포함하지 않는다.
+  candidates 는 raw 후보(food_name/confidence/estimated_serving)에 더해 LLM 영양
+  추정치(nutrition)를 포함한다 — 영양 DB 미등록 음식의 기록 초안용.
 - user_eating_habits: 보정을 Backend가 하므로 AI Server는 사용하지 않는다.
   하위 호환을 위해 optional 로 수용만 하고 무시한다.
 """
@@ -29,10 +30,26 @@ class AnalyzeRequest(BaseModel):
     )
 
 
+class CandidateNutrition(BaseModel):
+    """LLM 이 추정한 1인분 기준 영양값.
+
+    영양 DB에 없는 음식도 기록 초안을 만들 수 있도록 함께 반환한다.
+    Backend 는 DB 매칭 성공 시 DB 값을 우선하고, 실패 시 이 추정치를 쓴다.
+    """
+
+    base_serving: str
+    calories: float
+    carbs: float
+    protein: float
+    fat: float
+
+
 class Candidate(BaseModel):
     food_name: str
     confidence: float
     estimated_serving: float
+    # 검증 실패 시 None (후보 자체는 유지 — vision._normalize_nutrition 참고)
+    nutrition: Optional[CandidateNutrition] = None
 
 
 class AICallLog(BaseModel):
