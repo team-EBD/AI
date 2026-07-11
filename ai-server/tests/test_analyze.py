@@ -74,3 +74,66 @@ def test_always_200_even_on_failure(client, set_gemini, stub_download):
 
 def test_request_validation_error_is_422(client):
     assert client.post("/internal/analyze", json={}).status_code == 422
+
+
+# --- image_url 스킴/크기 가드 (FE 계약 강화) ---
+
+def test_invalid_scheme_is_200_failed_provider_error(client, set_gemini, stub_download):
+    # 다운로드·Gemini 가 모두 성공하도록 스텁해도, 스킴 가드가 먼저 걸러야 한다.
+    stub_download()
+    set_gemini(text=json.dumps({"candidates": [{"food_name": "김밥"}]}))
+    res = client.post("/internal/analyze", json={"image_url": "file:///etc/passwd"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] == "failed"
+    assert body["reason"] == "provider_error"
+
+
+def test_oversized_content_length_is_200_failed_provider_error(
+    client, set_gemini, stub_http_get, monkeypatch
+):
+    from app.config import get_settings
+
+    monkeypatch.setenv("MAX_IMAGE_BYTES", "1024")
+    get_settings.cache_clear()
+    # 본문은 작지만 Content-Length 헤더가 상한 초과를 선언 → 즉시 실패
+    stub_http_get(
+        content=b"\xff\xd8\xff",
+        headers={"content-type": "image/jpeg", "content-length": "99999999"},
+    )
+    set_gemini(text=json.dumps({"candidates": [{"food_name": "김밥"}]}))
+    res = _analyze(client)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] == "failed"
+    assert body["reason"] == "provider_error"
+
+
+def test_oversized_actual_bytes_is_200_failed_provider_error(
+    client, set_gemini, stub_http_get, monkeypatch
+):
+    from app.config import get_settings
+
+    monkeypatch.setenv("MAX_IMAGE_BYTES", "1024")
+    get_settings.cache_clear()
+    # Content-Length 헤더가 없어도 실제 다운로드된 바이트 수로 상한을 강제
+    stub_http_get(content=b"\x00" * 2048, headers={"content-type": "image/jpeg"})
+    set_gemini(text=json.dumps({"candidates": [{"food_name": "김밥"}]}))
+    body = _analyze(client).json()
+    assert body["status"] == "failed"
+    assert body["reason"] == "provider_error"
+
+
+def test_download_within_limit_succeeds(client, set_gemini, stub_http_get):
+    # 상한 이내면 정상 흐름 유지 (실제 _download_image 경로 통과)
+    stub_http_get(
+        content=b"\xff\xd8\xff",
+        headers={"content-type": "image/jpeg", "content-length": "3"},
+    )
+    set_gemini(
+        text=json.dumps(
+            {"candidates": [{"food_name": "김밥", "confidence": 0.9, "estimated_serving": 1.0}]}
+        )
+    )
+    body = _analyze(client).json()
+    assert body["status"] == "success"

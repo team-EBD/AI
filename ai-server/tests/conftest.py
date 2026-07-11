@@ -93,7 +93,7 @@ def stub_download(monkeypatch):
     """이미지 다운로드를 성공(더미 바이트)으로 대체하거나, 예외를 던지게 한다."""
 
     def _apply(exc: Optional[Exception] = None):
-        async def fake_download(url: str, timeout: float):
+        async def fake_download(url: str, timeout: float, max_bytes: int):
             if exc is not None:
                 raise exc
             return b"\xff\xd8\xff", "image/jpeg"
@@ -101,5 +101,40 @@ def stub_download(monkeypatch):
         import app.services.vision as vision_mod
 
         monkeypatch.setattr(vision_mod, "_download_image", fake_download)
+
+    return _apply
+
+
+@pytest.fixture
+def stub_http_get(monkeypatch):
+    """vision 의 httpx.AsyncClient 를 가짜 응답(헤더/본문 지정 가능)으로 대체.
+
+    _download_image 내부의 크기 상한(MAX_IMAGE_BYTES) 검사 로직을 실제로 태우기 위해
+    _download_image 자체가 아닌 HTTP 계층만 스텁한다.
+    """
+
+    def _apply(content: bytes = b"\xff\xd8\xff", headers: Optional[dict] = None):
+        response = SimpleNamespace(
+            content=content,
+            headers=headers or {"content-type": "image/jpeg"},
+            raise_for_status=lambda: None,
+        )
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def get(self, url):
+                return response
+
+        import app.services.vision as vision_mod
+
+        monkeypatch.setattr(vision_mod.httpx, "AsyncClient", FakeAsyncClient)
 
     return _apply
