@@ -166,6 +166,31 @@ def test_scoring_prefers_calorie_fit():
     assert fit > over
 
 
+def test_breakfast_timing_gives_bonus_to_breakfast_categories():
+    # breakfast 전형 카테고리(편의점)는 비전형(배달)보다 가산점을 받는다
+    gaps = _nutrition_gaps(_summary())
+    breakfast_fit = _score_candidate(150, 10, "편의점", gaps, "breakfast")
+    breakfast_miss = _score_candidate(150, 10, "배달", gaps, "breakfast")
+    assert breakfast_fit == breakfast_miss + 30.0
+
+
+def test_unknown_timing_gives_zero_bonus_without_crash():
+    # 알 수 없는/빈 meal_timing 은 가산점 0 으로 안전 처리(크래시 없음)
+    gaps = _nutrition_gaps(_summary())
+    unknown = _score_candidate(150, 10, "편의점", gaps, "brunch")
+    empty = _score_candidate(150, 10, "편의점", gaps, "")
+    assert unknown == empty
+
+
+def test_breakfast_request_end_to_end(client, set_candidates, set_gemini):
+    set_candidates(DB_ROWS)
+    set_gemini(text=_llm([{"name": "참치김밥", "reason": "아침에 간편해요."}]))
+    req = dict(REQ, meal_timing="breakfast")
+    body = _recommend(client, req).json()
+    assert body["status"] == "success"
+    assert len(body["recommendations"]) == 3
+
+
 def test_select_orders_by_score_and_caps_topN():
     # 남은 칼로리가 적으면(180) 저칼로리 후보가 상위로
     cands = _select_candidates(DB_ROWS, _summary(), "dinner", "convenience_store")

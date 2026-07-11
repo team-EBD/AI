@@ -9,7 +9,7 @@ import uuid
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from .config import configure_gemini, is_gemini_configured
+from .config import configure_gemini, get_settings, is_gemini_configured
 from .routers import analyze, recommend
 from .utils.logger import logger, request_id_var, setup_logging
 
@@ -58,10 +58,18 @@ async def health() -> dict:
 
 @app.get("/health/ready", tags=["health"])
 async def ready():
-    """readiness — Gemini 사용 준비(API Key 설정)까지 확인."""
-    if is_gemini_configured():
-        return {"status": "ready"}
+    """readiness — Gemini 사용 준비(API Key 설정)까지 확인.
+
+    checks.database 는 DATABASE_URL 설정 여부만 노출한다(recommend 전용 의존성이라
+    누락돼도 readiness 실패로 처리하지 않음).
+    """
+    checks = {
+        "gemini": is_gemini_configured(),
+        "database": bool(get_settings().database_url),
+    }
+    if checks["gemini"]:
+        return {"status": "ready", "checks": checks}
     return JSONResponse(
         status_code=503,
-        content={"status": "not_ready", "reason": "gemini_not_configured"},
+        content={"status": "not_ready", "reason": "gemini_not_configured", "checks": checks},
     )

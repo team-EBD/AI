@@ -40,10 +40,24 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
 """
 
 
-async def _download_image(url: str, timeout: float) -> tuple[bytes, str]:
+def _is_allowed_url(url: str) -> bool:
+    """http/https 스킴만 허용한다 (file://, data: 등 차단 — SSRF/로컬 파일 접근 방지)."""
+    return url.startswith("http://") or url.startswith("https://")
+
+
+async def _download_image(url: str, timeout: float, max_bytes: int) -> tuple[bytes, str]:
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
         resp = await client.get(url)
         resp.raise_for_status()
+        # Content-Length 헤더가 있으면 본문을 읽기 전에 크기 상한을 먼저 확인
+        content_length = resp.headers.get("content-length")
+        if content_length and content_length.isdigit() and int(content_length) > max_bytes:
+            raise ValueError(
+                f"이미지 크기 초과 (Content-Length={content_length} > {max_bytes} bytes)"
+            )
+        # 헤더가 없거나 부정확한 경우 대비, 실제 다운로드된 바이트 수도 검사
+        if len(resp.content) > max_bytes:
+            raise ValueError(f"이미지 크기 초과 ({len(resp.content)} > {max_bytes} bytes)")
         content_type = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
         if not content_type.startswith("image/"):
             content_type = "image/jpeg"
@@ -85,10 +99,16 @@ async def analyze(image_url: str) -> dict:
             ),
         }
 
-    # 1) 이미지 다운로드
+    # 0) URL 스킴 검증 — http/https 외 스킴은 다운로드 시도 없이 실패 처리
+    #    (422 대신 200-failed 계약 유지를 위해 pydantic 이 아닌 서비스에서 검증)
+    if not _is_allowed_url(image_url):
+        logger.warning("허용되지 않은 image_url 스킴: %s", image_url)
+        return fail("provider_error")
+
+    # 1) 이미지 다운로드 (크기 상한: MAX_IMAGE_BYTES)
     try:
         image_bytes, mime_type = await _download_image(
-            image_url, settings.image_download_timeout_seconds
+            image_url, settings.image_download_timeout_seconds, settings.max_image_bytes
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("이미지 다운로드 실패: %s", exc)

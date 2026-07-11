@@ -22,6 +22,8 @@ class Settings:
         self.image_download_timeout_seconds: float = float(
             os.getenv("IMAGE_DOWNLOAD_TIMEOUT_SECONDS", "10")
         )
+        # 이미지 다운로드 최대 허용 크기(bytes). 기본 10MB. 초과 시 provider_error 처리.
+        self.max_image_bytes: int = int(os.getenv("MAX_IMAGE_BYTES", "10485760"))
         # 내부 호출 인증(opt-in). 비어 있으면 검증하지 않는다(하위 호환).
         # 값이 설정되면 /internal/* 는 X-Internal-Token 헤더가 일치해야 한다.
         self.internal_token: str = os.getenv("INTERNAL_TOKEN", "")

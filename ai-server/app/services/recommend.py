@@ -42,9 +42,11 @@ def _db_categories(preferred_category: str) -> list:
 # 끼니별로 흔히 먹는 DB 카테고리(휴리스틱 가정). 실제 데이터(meal_records) 분석 전까지 임시.
 # 스코어링에서 소폭 가산점으로만 쓰인다(채널 필터는 preferred_category 가 담당).
 _MEAL_TIMING_CATEGORIES = {
+    "breakfast": {"편의점", "한식", "샐러드", "음료"},  # 간편식·가정식 위주 아침
     "lunch": {"편의점", "분식", "면류", "샐러드", "간식"},
     "dinner": {"한식", "배달", "중식", "외식"},
 }
+# 알 수 없는/누락된 meal_timing 은 .get(meal_timing, set()) 으로 가산점 0 처리된다.
 
 # LLM 에 넘길 상위 후보 수(스코어링 후 상위 N개만 전달).
 _TOP_N = 8
