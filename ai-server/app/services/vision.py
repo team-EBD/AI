@@ -12,9 +12,9 @@
 import asyncio
 import time
 
-import google.generativeai as genai
 import httpx
 
+from .. import gemini_client
 from ..config import get_settings
 from ..utils.logger import build_ai_call_log, logger
 from ..utils.validator import GeminiResponseError, extract_text, parse_json_response
@@ -152,15 +152,12 @@ async def analyze(image_url: str) -> dict:
         logger.warning("이미지 다운로드 실패: %s", exc)
         return fail("provider_error")
 
-    # 2) Gemini Vision 호출 (JSON 강제 + timeout)
+    # 2) Gemini Vision 호출 (JSON 강제 + thinking 제한 + timeout)
     try:
-        model = genai.GenerativeModel(
-            settings.gemini_model,
-            generation_config={"response_mime_type": "application/json"},
-        )
         response = await asyncio.wait_for(
-            model.generate_content_async(
-                [ANALYZE_PROMPT, {"mime_type": mime_type, "data": image_bytes}]
+            gemini_client.generate_json(
+                settings.gemini_model,
+                [ANALYZE_PROMPT, gemini_client.image_part(image_bytes, mime_type)],
             ),
             timeout=settings.ai_timeout_seconds,
         )

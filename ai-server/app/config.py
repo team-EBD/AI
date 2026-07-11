@@ -5,7 +5,6 @@ API Key 등 비밀값은 .env 에서만 읽어오며, 코드에 하드코딩하�
 import os
 from functools import lru_cache
 
-import google.generativeai as genai
 from dotenv import load_dotenv
 
 from .utils.logger import logger
@@ -19,6 +18,10 @@ class Settings:
         self.gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
         self.gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         self.ai_timeout_seconds: float = float(os.getenv("AI_TIMEOUT_SECONDS", "15"))
+        # Gemini 2.5 thinking 토큰 예산. 0=비활성(기본) — 분석/추천은 단순 구조화
+        # 작업이라 thinking 없이 충분하며, 켜두면 호출당 10~30초 이상 걸려
+        # AI_TIMEOUT_SECONDS 를 초과한다(2026-07-11 운영 ai_timeout 장애).
+        self.gemini_thinking_budget: int = int(os.getenv("GEMINI_THINKING_BUDGET", "0"))
         self.image_download_timeout_seconds: float = float(
             os.getenv("IMAGE_DOWNLOAD_TIMEOUT_SECONDS", "10")
         )
@@ -44,7 +47,7 @@ def is_gemini_configured() -> bool:
 
 
 def configure_gemini() -> None:
-    """앱 시작 시 1회 호출하여 Gemini SDK에 API Key를 설정한다."""
+    """앱 시작 시 1회 호출. 클라이언트는 gemini_client 에서 지연 생성된다."""
     settings = get_settings()
     if not settings.gemini_api_key or settings.gemini_api_key == "your_gemini_api_key_here":
         logger.warning(
@@ -52,5 +55,8 @@ def configure_gemini() -> None:
             "AI 호출은 provider_error 로 실패합니다."
         )
         return
-    genai.configure(api_key=settings.gemini_api_key)
-    logger.info("Gemini 구성 완료 (model=%s)", settings.gemini_model)
+    logger.info(
+        "Gemini 구성 완료 (model=%s, thinking_budget=%d)",
+        settings.gemini_model,
+        settings.gemini_thinking_budget,
+    )

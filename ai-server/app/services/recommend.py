@@ -12,8 +12,7 @@ AI Server 는 후보를 요청으로 받지 않고 DB 에서 직접 조회하되
 import asyncio
 import time
 
-import google.generativeai as genai
-
+from .. import gemini_client
 from ..config import get_settings
 from ..db import fetch_candidate_menus
 from ..schemas.recommend import CandidateMenu, RecommendRequest
@@ -239,14 +238,12 @@ async def recommend(req: RecommendRequest) -> dict:
         rows, req.daily_summary, req.meal_timing, req.preferred_category
     )
 
-    # 3) LLM 으로 추려진 후보 중 선택 + reason 생성
+    # 3) LLM 으로 추려진 후보 중 선택 + reason 생성 (thinking 제한 — gemini_client)
     try:
-        model = genai.GenerativeModel(
-            settings.gemini_model,
-            generation_config={"response_mime_type": "application/json"},
-        )
         response = await asyncio.wait_for(
-            model.generate_content_async(_build_prompt(req, candidates)),
+            gemini_client.generate_json(
+                settings.gemini_model, [_build_prompt(req, candidates)]
+            ),
             timeout=settings.ai_timeout_seconds,
         )
     except asyncio.TimeoutError:
