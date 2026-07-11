@@ -14,12 +14,12 @@ from fastapi.testclient import TestClient
 
 @dataclass
 class GeminiStub:
-    """genai.GenerativeModel 대역. text 를 돌려주거나 exc 를 던진다."""
+    """gemini_client.generate_json 대역. text 를 돌려주거나 exc 를 던진다."""
 
     text: str = ""
     exc: Optional[Exception] = None
 
-    async def generate_content_async(self, *args, **kwargs):
+    async def generate_json(self, model, contents):
         if self.exc is not None:
             raise self.exc
         return SimpleNamespace(text=self.text)
@@ -45,19 +45,22 @@ def client() -> TestClient:
 
 @pytest.fixture
 def set_gemini(monkeypatch):
-    """vision/recommend 서비스의 genai.GenerativeModel 을 스텁으로 교체."""
+    """gemini_client.generate_json / image_part 를 스텁으로 교체.
+
+    vision/recommend 는 `from .. import gemini_client` 로 모듈 참조를 쓰므로
+    모듈 속성 한 번만 바꾸면 두 서비스 모두에 적용된다. image_part 도 함께
+    대체해 테스트에서 실제 google-genai SDK import 가 일어나지 않게 한다.
+    """
 
     def _apply(text: str = "", exc: Optional[Exception] = None) -> GeminiStub:
         stub = GeminiStub(text=text, exc=exc)
 
-        def factory(*args, **kwargs):
-            return stub
+        from app import gemini_client
 
-        import app.services.recommend as recommend_mod
-        import app.services.vision as vision_mod
-
-        monkeypatch.setattr(vision_mod.genai, "GenerativeModel", factory)
-        monkeypatch.setattr(recommend_mod.genai, "GenerativeModel", factory)
+        monkeypatch.setattr(gemini_client, "generate_json", stub.generate_json)
+        monkeypatch.setattr(
+            gemini_client, "image_part", lambda data, mime_type: {"mime": mime_type}
+        )
         return stub
 
     return _apply
