@@ -110,6 +110,27 @@ def _select_candidates(rows: list, summary, meal_timing: str, preferred_category
     ]
 
 
+_MEAL_TIMING_LABELS = {
+    "breakfast": "아침",
+    "lunch": "점심",
+    "dinner": "저녁",
+    "snack": "간식",
+}
+
+
+def _history_block(ctx) -> str:
+    """user_history_context → 프롬프트의 [오늘 먹은 음식] 블록. 없으면 안내 문구."""
+    if ctx is None or (not ctx.today_foods and not ctx.last_meal_foods):
+        return "- 아직 오늘 기록된 식사가 없어요."
+    lines = []
+    if ctx.today_foods:
+        lines.append(f"- 오늘 먹은 음식(시간순): {', '.join(ctx.today_foods)}")
+    if ctx.last_meal_foods:
+        label = _MEAL_TIMING_LABELS.get(ctx.last_meal_type, "직전 식사")
+        lines.append(f"- 직전 식사({label}): {', '.join(ctx.last_meal_foods)}")
+    return "\n".join(lines)
+
+
 def _build_prompt(req: RecommendRequest, candidates: list) -> str:
     s = req.daily_summary
 
@@ -129,6 +150,9 @@ def _build_prompt(req: RecommendRequest, candidates: list) -> str:
 - 탄수화물: {s.total_carbs} g
 - 단백질: {s.total_protein} / 목표 {s.goal_protein} g
 - 지방: {s.total_fat} g
+
+[오늘 먹은 음식]
+{_history_block(req.user_history_context)}
 
 [요청 조건]
 - 선호 카테고리: {req.preferred_category}
@@ -151,6 +175,10 @@ def _build_prompt(req: RecommendRequest, candidates: list) -> str:
 - category 와 estimated_calories 는 후보 원본 값을 쓰므로 응답에 포함하지 않아도 됩니다.
 - reason 은 오늘 식단 요약(부족·과잉 영양소)을 근거로, 해당 후보에 참고 힌트가 있으면
   그 힌트를 활용해 1~2문장, 친근한 말투의 한국어로 작성하세요.
+- [오늘 먹은 음식]에 기록이 있으면 reason 에서 그중 관련 있는 음식(특히 직전 식사)을
+  직접 언급하며 이유를 설명하세요. 예: "점심에 참치김밥을 드셨으니 저녁은 단백질을
+  보충할 수 있는 ○○이 좋아요", "오늘 면 요리를 드셨으니 이번엔 채소가 많은 ○○은 어때요".
+  기록이 없으면 영양 요약만 근거로 작성하세요.
 - 진단/치료/처방/의학적 효능 관련 표현(예: 질병을 치료, 처방, 증상 완화)은 절대 사용하지 마세요.
 - 생활 식단 참고 수준의 표현만 사용하세요.
 """

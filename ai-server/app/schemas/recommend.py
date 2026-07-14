@@ -6,7 +6,7 @@
   LLM 은 그 후보 안에서만 3개를 고르고 reason 만 생성한다(hallucination·칼로리 오차 방지).
   → 요청에는 candidates 를 넣지 않는다(AI 가 preferred_category 로 조회).
 """
-from typing import Any, List, Literal, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -34,12 +34,23 @@ class CandidateMenu(BaseModel):
     score_reason_hint: Optional[str] = None
 
 
+class UserHistoryContext(BaseModel):
+    """오늘 먹은 음식 이력(BE 가 meal_records 에서 구성). reason 근거로만 쓰인다.
+
+    모든 필드가 선택이라 기존 BE(미전송)와도 호환된다.
+    """
+
+    today_foods: List[str] = []  # 오늘 먹은 음식 이름 (eaten_at 순)
+    last_meal_type: Optional[str] = None  # 직전 식사 타입 (breakfast 등)
+    last_meal_foods: List[str] = []  # 직전 식사의 음식 이름
+
+
 class RecommendRequest(BaseModel):
     daily_summary: DailySummary
     preferred_category: str = Field(..., description="예: convenience_store")
     meal_timing: str = Field(..., description="예: dinner")
-    # Phase 2 용 자리(선택). 지금은 비어 있어도 동작에 문제 없음.
-    user_history_context: Optional[Any] = None
+    # 오늘 먹은 음식 이력(선택). 없으면 영양 요약만으로 reason 을 작성한다.
+    user_history_context: Optional[UserHistoryContext] = None
 
 
 class Recommendation(BaseModel):

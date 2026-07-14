@@ -198,3 +198,42 @@ def test_select_orders_by_score_and_caps_topN():
     # 700kcal 불고기 도시락은 큰 초과 → 마지막쯤
     assert names[0] != "불고기 도시락"
     assert all(c.score_reason_hint for c in cands)  # 힌트 채워짐
+
+
+def test_prompt_includes_today_foods_and_last_meal(client, set_candidates, set_gemini):
+    """user_history_context 가 있으면 프롬프트에 오늘 먹은 음식·직전 식사가 들어간다."""
+    set_candidates(DB_ROWS)
+    stub = set_gemini(text=_llm([{"name": "참치김밥", "reason": "x"}]))
+    req = dict(
+        REQ,
+        user_history_context={
+            "today_foods": ["아보카도 토스트", "참치김밥"],
+            "last_meal_type": "lunch",
+            "last_meal_foods": ["참치김밥"],
+        },
+    )
+    body = _recommend(client, req).json()
+    assert body["status"] == "success"
+    prompt = stub.last_contents[0]
+    assert "오늘 먹은 음식(시간순): 아보카도 토스트, 참치김밥" in prompt
+    assert "직전 식사(점심): 참치김밥" in prompt
+
+
+def test_prompt_without_history_context_still_works(client, set_candidates, set_gemini):
+    """이력 미전송(기존 BE 계약)이어도 성공하고, 기록 없음 안내가 들어간다."""
+    set_candidates(DB_ROWS)
+    stub = set_gemini(text=_llm([{"name": "참치김밥", "reason": "x"}]))
+    body = _recommend(client).json()
+    assert body["status"] == "success"
+    assert "아직 오늘 기록된 식사가 없어요" in stub.last_contents[0]
+
+
+def test_unknown_last_meal_type_uses_generic_label(client, set_candidates, set_gemini):
+    set_candidates(DB_ROWS)
+    stub = set_gemini(text=_llm([{"name": "참치김밥", "reason": "x"}]))
+    req = dict(
+        REQ,
+        user_history_context={"last_meal_foods": ["샌드위치"]},
+    )
+    _recommend(client, req)
+    assert "직전 식사(직전 식사): 샌드위치" in stub.last_contents[0]
