@@ -14,12 +14,17 @@ from fastapi.testclient import TestClient
 
 @dataclass
 class GeminiStub:
-    """gemini_client.generate_json 대역. text 를 돌려주거나 exc 를 던진다."""
+    """gemini_client.generate_json 대역. text 를 돌려주거나 exc 를 던진다.
+
+    마지막 호출의 contents 를 기록해 테스트에서 프롬프트 내용을 검증할 수 있다.
+    """
 
     text: str = ""
     exc: Optional[Exception] = None
+    last_contents: Optional[list] = None
 
     async def generate_json(self, model, contents):
+        self.last_contents = contents
         if self.exc is not None:
             raise self.exc
         return SimpleNamespace(text=self.text)
