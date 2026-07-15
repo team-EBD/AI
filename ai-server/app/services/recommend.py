@@ -131,6 +131,11 @@ def _history_block(ctx) -> str:
     return "\n".join(lines)
 
 
+def _current_time_line(current_time) -> str:
+    """current_time(HH:mm, 선택) → [요청 조건] 블록의 현재 시각 줄. 없으면 빈 문자열."""
+    return f"\n- 현재 시각: {current_time} (KST)" if current_time else ""
+
+
 def _build_prompt(req: RecommendRequest, candidates: list) -> str:
     s = req.daily_summary
 
@@ -156,7 +161,7 @@ def _build_prompt(req: RecommendRequest, candidates: list) -> str:
 
 [요청 조건]
 - 선호 카테고리: {req.preferred_category}
-- 끼니: {req.meal_timing}
+- 끼니: {req.meal_timing}{_current_time_line(req.current_time)}
 
 [후보 메뉴 목록] — 반드시 이 목록 안에서만 선택하세요.
 {candidates_block}
@@ -179,6 +184,9 @@ def _build_prompt(req: RecommendRequest, candidates: list) -> str:
   직접 언급하며 이유를 설명하세요. 예: "점심에 참치김밥을 드셨으니 저녁은 단백질을
   보충할 수 있는 ○○이 좋아요", "오늘 면 요리를 드셨으니 이번엔 채소가 많은 ○○은 어때요".
   기록이 없으면 영양 요약만 근거로 작성하세요.
+- [요청 조건]에 현재 시각이 있으면 시간대를 고려해 reason 을 작성하세요.
+  예: 21시 이후 늦은 시간이면 "늦은 시간이니 부담 없는 ○○이 좋아요"처럼 가벼운 선택을,
+  이른 아침이면 속이 편한 선택을 권하세요. 현재 시각이 없으면 이 규칙은 무시하세요.
 - 진단/치료/처방/의학적 효능 관련 표현(예: 질병을 치료, 처방, 증상 완화)은 절대 사용하지 마세요.
 - 생활 식단 참고 수준의 표현만 사용하세요.
 """

@@ -228,6 +228,25 @@ def test_prompt_without_history_context_still_works(client, set_candidates, set_
     assert "아직 오늘 기록된 식사가 없어요" in stub.last_contents[0]
 
 
+def test_prompt_includes_current_time(client, set_candidates, set_gemini):
+    """current_time 이 있으면 프롬프트 [요청 조건]에 현재 시각이 들어간다."""
+    set_candidates(DB_ROWS)
+    stub = set_gemini(text=_llm([{"name": "참치김밥", "reason": "x"}]))
+    req = dict(REQ, current_time="21:40")
+    body = _recommend(client, req).json()
+    assert body["status"] == "success"
+    assert "- 현재 시각: 21:40 (KST)" in stub.last_contents[0]
+
+
+def test_prompt_without_current_time_omits_line(client, set_candidates, set_gemini):
+    """current_time 미전송(기존 BE 계약)이면 현재 시각 줄이 없다."""
+    set_candidates(DB_ROWS)
+    stub = set_gemini(text=_llm([{"name": "참치김밥", "reason": "x"}]))
+    body = _recommend(client).json()
+    assert body["status"] == "success"
+    assert "현재 시각:" not in stub.last_contents[0]
+
+
 def test_unknown_last_meal_type_uses_generic_label(client, set_candidates, set_gemini):
     set_candidates(DB_ROWS)
     stub = set_gemini(text=_llm([{"name": "참치김밥", "reason": "x"}]))
