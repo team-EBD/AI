@@ -51,6 +51,8 @@ class RecommendRequest(BaseModel):
     meal_timing: str = Field(..., description="예: dinner")
     # 오늘 먹은 음식 이력(선택). 없으면 영양 요약만으로 reason 을 작성한다.
     user_history_context: Optional[UserHistoryContext] = None
+    # 현재 시각 "HH:mm" (KST, 선택). reason 이 시간대(늦은 밤 등)를 고려하게 한다.
+    current_time: Optional[str] = Field(default=None, description="예: 21:40")
 
 
 class Recommendation(BaseModel):
