@@ -21,8 +21,56 @@ def test_success(client, set_gemini, stub_download):
     body = _analyze(client).json()
     assert body["status"] == "success"
     assert body["candidates"][0]["food_name"] == "김치찌개"
+    assert body["candidates"][0]["food_index"] == 0  # 미지정 시 0 (구모델 호환)
     assert body["ai_call_log"]["task_type"] == "analyze"
     assert body["ai_call_log"]["status"] == "success"
+
+
+def test_food_groups_normalized(client, set_gemini, stub_download):
+    """음식별(food_index) 그룹핑 — 음식당 최대 3개 예측, 인덱스는 0부터 재부여."""
+    stub_download()
+    set_gemini(
+        text=json.dumps(
+            {
+                "candidates": [
+                    # 음식 2 (등장 순서 기준 첫 그룹) — 대체 예측 4개 → 3개로 잘림
+                    {"food_index": 2, "food_name": "김치찌개", "confidence": 0.9},
+                    {"food_index": 2, "food_name": "된장찌개", "confidence": 0.5},
+                    {"food_index": 2, "food_name": "부대찌개", "confidence": 0.3},
+                    {"food_index": 2, "food_name": "순두부찌개", "confidence": 0.1},
+                    # 음식 7 (두 번째 그룹)
+                    {"food_index": 7, "food_name": "공기밥", "confidence": 0.95},
+                ]
+            }
+        )
+    )
+    body = _analyze(client).json()
+    assert body["status"] == "success"
+    got = [(c["food_index"], c["food_name"]) for c in body["candidates"]]
+    assert got == [
+        (0, "김치찌개"),
+        (0, "된장찌개"),
+        (0, "부대찌개"),
+        (1, "공기밥"),
+    ]
+
+
+def test_food_groups_capped_at_five(client, set_gemini, stub_download):
+    """서로 다른 음식은 최대 5개까지만 반환한다."""
+    stub_download()
+    set_gemini(
+        text=json.dumps(
+            {
+                "candidates": [
+                    {"food_index": i, "food_name": f"음식{i}", "confidence": 0.9}
+                    for i in range(8)
+                ]
+            }
+        )
+    )
+    body = _analyze(client).json()
+    assert body["status"] == "success"
+    assert [c["food_index"] for c in body["candidates"]] == [0, 1, 2, 3, 4]
 
 
 def test_not_food(client, set_gemini, stub_download):
