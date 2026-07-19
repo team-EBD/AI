@@ -28,6 +28,7 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
 {
   "candidates": [
     {
+      "food_index": 0,
       "food_name": "김치찌개",
       "confidence": 0.87,
       "estimated_serving": 1.0,
@@ -38,20 +39,53 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
         "protein": 22.0,
         "fat": 16.0
       }
+    },
+    {
+      "food_index": 0,
+      "food_name": "된장찌개",
+      "confidence": 0.41,
+      "estimated_serving": 1.0,
+      "nutrition": {
+        "base_serving": "1인분(400g)",
+        "calories": 250,
+        "carbs": 14.0,
+        "protein": 18.0,
+        "fat": 12.0
+      }
+    },
+    {
+      "food_index": 1,
+      "food_name": "공기밥",
+      "confidence": 0.95,
+      "estimated_serving": 1.0,
+      "nutrition": {
+        "base_serving": "1공기(210g)",
+        "calories": 310,
+        "carbs": 68.0,
+        "protein": 5.5,
+        "fat": 0.5
+      }
     }
   ]
 }
 
 규칙:
+- 사진에 서로 다른 음식이 여러 개 있으면, 각 음식마다 food_index 를 0부터 순서대로
+  부여하세요 (서로 다른 음식은 최대 5개까지).
+- 같은 음식에 대한 대체 예측(무엇인지 헷갈리는 경우)은 같은 food_index 로 묶고,
+  가능성이 높은 순서로 음식 하나당 최대 3개까지만 포함하세요.
 - food_name 은 반드시 한국어로 작성하세요.
 - confidence 는 0.0~1.0 사이의 확신도입니다.
 - estimated_serving 은 1인분을 1.0 기준으로 한 추정 섭취량입니다.
 - nutrition 은 해당 음식 1인분 기준의 영양 추정치입니다. base_serving 은
   기준량 설명(예: "1인분(400g)"), calories 는 kcal, carbs/protein/fat 은 g 단위입니다.
   일반적인 한국 음식 기준으로 현실적인 값을 추정하세요.
-- 후보는 가능성이 높은 순서로 최대 3개까지만 포함하세요.
 - 사진에 음식이 없거나 음식이 아니면 candidates 를 반드시 빈 배열([])로 반환하세요.
 """
+
+# 사진 하나에서 구분하는 음식 수 상한 / 음식 하나당 대체 예측 수 상한
+MAX_FOODS = 5
+MAX_PREDICTIONS_PER_FOOD = 3
 
 
 def _is_allowed_url(url: str) -> bool:
@@ -102,21 +136,44 @@ def _normalize_nutrition(raw) -> dict | None:
 
 
 def _normalize_candidates(raw: list) -> list[dict]:
-    normalized: list[dict] = []
-    for item in raw[:3]:
+    """음식(food_index) 단위로 그룹핑해 정규화한다.
+
+    - food_index 가 없거나 이상하면 0 으로 간주 (구모델/부분 응답 호환)
+    - 서로 다른 음식은 등장 순서대로 최대 MAX_FOODS 개
+    - 같은 음식의 대체 예측은 최대 MAX_PREDICTIONS_PER_FOOD 개
+    - 반환되는 food_index 는 0부터 연속되도록 재부여한다
+    """
+    groups: dict[int, list[dict]] = {}
+    order: list[int] = []
+    for item in raw:
         if not isinstance(item, dict):
             continue
         try:
-            normalized.append(
-                {
-                    "food_name": str(item["food_name"]),
-                    "confidence": float(item.get("confidence", 0.0)),
-                    "estimated_serving": float(item.get("estimated_serving", 1.0)),
-                    "nutrition": _normalize_nutrition(item.get("nutrition")),
-                }
-            )
+            raw_index = item.get("food_index", 0)
+            food_index = int(raw_index) if not isinstance(raw_index, bool) else 0
+            candidate = {
+                "food_name": str(item["food_name"]),
+                "confidence": float(item.get("confidence", 0.0)),
+                "estimated_serving": float(item.get("estimated_serving", 1.0)),
+                "nutrition": _normalize_nutrition(item.get("nutrition")),
+            }
         except (KeyError, TypeError, ValueError):
             continue
+        if food_index < 0:
+            food_index = 0
+        if food_index not in groups:
+            if len(order) >= MAX_FOODS:
+                continue
+            groups[food_index] = []
+            order.append(food_index)
+        if len(groups[food_index]) >= MAX_PREDICTIONS_PER_FOOD:
+            continue
+        groups[food_index].append(candidate)
+
+    normalized: list[dict] = []
+    for new_index, original_index in enumerate(order):
+        for candidate in groups[original_index]:
+            normalized.append({**candidate, "food_index": new_index})
     return normalized
 
 

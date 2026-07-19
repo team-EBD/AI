@@ -45,6 +45,9 @@ class CandidateNutrition(BaseModel):
 
 
 class Candidate(BaseModel):
+    # 사진 속 몇 번째 음식에 대한 예측인지 (0부터 연속). 같은 food_index 를 가진
+    # 후보들은 "같은 음식에 대한 대체 예측"이며 음식 하나당 최대 3개까지만 반환한다.
+    food_index: int = 0
     food_name: str
     confidence: float
     estimated_serving: float
