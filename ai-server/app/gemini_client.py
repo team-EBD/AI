@@ -47,6 +47,10 @@ async def generate_json(model: str, contents: list):
     settings = get_settings()
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
+        # 같은 입력에 같은 출력이 나오도록 디코딩을 고정한다 —
+        # 미설정 시 기본 temperature(1.0)로 매 호출 결과가 달라진다.
+        temperature=settings.gemini_temperature,
+        seed=settings.gemini_seed,
         thinking_config=types.ThinkingConfig(
             thinking_budget=settings.gemini_thinking_budget
         ),
