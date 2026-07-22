@@ -22,6 +22,11 @@ class Settings:
         # 작업이라 thinking 없이 충분하며, 켜두면 호출당 10~30초 이상 걸려
         # AI_TIMEOUT_SECONDS 를 초과한다(2026-07-11 운영 ai_timeout 장애).
         self.gemini_thinking_budget: int = int(os.getenv("GEMINI_THINKING_BUDGET", "0"))
+        # 디코딩 고정 — 분석/추천은 분류·구조화 작업이라 창의성이 필요 없다.
+        # temperature 0 + seed 고정으로 같은 사진에 같은 결과가 나오도록 한다
+        # (완전한 결정론 보장은 아니지만 재현성 분산을 크게 줄인다).
+        self.gemini_temperature: float = float(os.getenv("GEMINI_TEMPERATURE", "0"))
+        self.gemini_seed: int = int(os.getenv("GEMINI_SEED", "20260722"))
         self.image_download_timeout_seconds: float = float(
             os.getenv("IMAGE_DOWNLOAD_TIMEOUT_SECONDS", "10")
         )
