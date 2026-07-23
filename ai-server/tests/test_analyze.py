@@ -22,8 +22,37 @@ def test_success(client, set_gemini, stub_download):
     assert body["status"] == "success"
     assert body["candidates"][0]["food_name"] == "김치찌개"
     assert body["candidates"][0]["food_index"] == 0  # 미지정 시 0 (구모델 호환)
+    # 국물/소스 미판별(구모델 응답)이면 True — FE 가 기존처럼 버튼을 노출한다
+    assert body["candidates"][0]["has_soup"] is True
+    assert body["candidates"][0]["has_sauce"] is True
     assert body["ai_call_log"]["task_type"] == "analyze"
     assert body["ai_call_log"]["status"] == "success"
+
+
+def test_soup_sauce_flags_passthrough(client, set_gemini, stub_download):
+    """has_soup/has_sauce 를 응답에 그대로 전달하고, 이상한 값은 True 로 폴백한다."""
+    stub_download()
+    set_gemini(
+        text=json.dumps(
+            {
+                "candidates": [
+                    {"food_name": "김치찌개", "confidence": 0.9, "has_soup": True, "has_sauce": False},
+                    {"food_index": 1, "food_name": "공기밥", "confidence": 0.95, "has_soup": False, "has_sauce": False},
+                    {"food_index": 2, "food_name": "탕수육", "confidence": 0.8, "has_soup": "false", "has_sauce": "true"},
+                    {"food_index": 3, "food_name": "샐러드", "confidence": 0.7, "has_soup": 123, "has_sauce": None},
+                ]
+            }
+        )
+    )
+    body = _analyze(client).json()
+    assert body["status"] == "success"
+    got = [(c["food_name"], c["has_soup"], c["has_sauce"]) for c in body["candidates"]]
+    assert got == [
+        ("김치찌개", True, False),
+        ("공기밥", False, False),
+        ("탕수육", False, True),  # 문자열 불리언도 수용
+        ("샐러드", True, True),  # 파싱 불가 값은 True 폴백
+    ]
 
 
 def test_food_groups_normalized(client, set_gemini, stub_download):

@@ -51,6 +51,10 @@ class Candidate(BaseModel):
     food_name: str
     confidence: float
     estimated_serving: float
+    # 국물/소스가 실제로 있는 음식인지 — FE 가 "국물 제외/소스 제외" 보정 버튼
+    # 노출을 판단하는 데 쓴다. 판별 불가·구모델 응답은 True(버튼 노출 유지).
+    has_soup: bool = True
+    has_sauce: bool = True
     # 검증 실패 시 None (후보 자체는 유지 — vision._normalize_nutrition 참고)
     nutrition: Optional[CandidateNutrition] = None
 
