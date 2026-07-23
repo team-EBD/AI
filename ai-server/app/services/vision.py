@@ -32,6 +32,8 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
       "food_name": "김치찌개",
       "confidence": 0.87,
       "estimated_serving": 1.0,
+      "has_soup": true,
+      "has_sauce": false,
       "nutrition": {
         "base_serving": "1인분(400g)",
         "calories": 320,
@@ -45,6 +47,8 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
       "food_name": "된장찌개",
       "confidence": 0.41,
       "estimated_serving": 1.0,
+      "has_soup": true,
+      "has_sauce": false,
       "nutrition": {
         "base_serving": "1인분(400g)",
         "calories": 250,
@@ -58,6 +62,8 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
       "food_name": "공기밥",
       "confidence": 0.95,
       "estimated_serving": 1.0,
+      "has_soup": false,
+      "has_sauce": false,
       "nutrition": {
         "base_serving": "1공기(210g)",
         "calories": 310,
@@ -77,6 +83,9 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
 - food_name 은 반드시 한국어로 작성하세요.
 - confidence 는 0.0~1.0 사이의 확신도입니다.
 - estimated_serving 은 1인분을 1.0 기준으로 한 추정 섭취량입니다.
+- has_soup 는 그 음식에 국물이 있는지(찌개/국/탕/국물 있는 면 요리 등),
+  has_sauce 는 소스·양념이 있는지(뿌려져 있거나 찍어 먹는 소스, 양념 범벅 등)를
+  나타내는 불리언입니다. 확실하지 않으면 true 로 판단하세요.
 - nutrition 은 해당 음식 1인분 기준의 영양 추정치입니다. base_serving 은
   기준량 설명(예: "1인분(400g)"), calories 는 kcal, carbs/protein/fat 은 g 단위입니다.
   일반적인 한국 음식 기준으로 현실적인 값을 추정하세요.
@@ -135,6 +144,19 @@ def _normalize_nutrition(raw) -> dict | None:
     return nutrition
 
 
+def _coerce_flag(value, default: bool = True) -> bool:
+    """LLM 이 준 불리언 플래그 방어적 파싱. 형식이 어긋나면 default(True=버튼 노출)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "yes", "1"}:
+            return True
+        if lowered in {"false", "no", "0"}:
+            return False
+    return default
+
+
 def _normalize_candidates(raw: list) -> list[dict]:
     """음식(food_index) 단위로 그룹핑해 정규화한다.
 
@@ -155,6 +177,8 @@ def _normalize_candidates(raw: list) -> list[dict]:
                 "food_name": str(item["food_name"]),
                 "confidence": float(item.get("confidence", 0.0)),
                 "estimated_serving": float(item.get("estimated_serving", 1.0)),
+                "has_soup": _coerce_flag(item.get("has_soup")),
+                "has_sauce": _coerce_flag(item.get("has_sauce")),
                 "nutrition": _normalize_nutrition(item.get("nutrition")),
             }
         except (KeyError, TypeError, ValueError):
