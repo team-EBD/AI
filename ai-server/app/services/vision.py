@@ -157,6 +157,30 @@ def _coerce_flag(value, default: bool = True) -> bool:
     return default
 
 
+def _clamp_confidence(raw) -> float:
+    """confidence 를 0.0~1.0 으로 강제한다.
+
+    프롬프트는 0~1 을 요구하지만 LLM 이 퍼센트 표기(예: 87)로 응답하는 경우가
+    있고, 범위 밖 값이 그대로 나가면 BE 저장 컬럼(Numeric(5,4)) overflow 로
+    분석 요청 전체가 500 이 된다.
+    """
+    value = float(raw)
+    if 1.0 < value <= 100.0:  # 퍼센트 표기로 판단하고 복원
+        value /= 100.0
+    return min(1.0, max(0.0, value))
+
+
+# estimated_serving 상식 범위 — 벗어나면 신뢰 불가로 보고 1인분으로 폴백
+SERVING_MIN, SERVING_MAX = 0.1, 10.0
+
+
+def _clamp_serving(raw) -> float:
+    value = float(raw)
+    if not (SERVING_MIN <= value <= SERVING_MAX):
+        return 1.0
+    return value
+
+
 def _normalize_candidates(raw: list) -> list[dict]:
     """음식(food_index) 단위로 그룹핑해 정규화한다.
 
@@ -175,8 +199,8 @@ def _normalize_candidates(raw: list) -> list[dict]:
             food_index = int(raw_index) if not isinstance(raw_index, bool) else 0
             candidate = {
                 "food_name": str(item["food_name"]),
-                "confidence": float(item.get("confidence", 0.0)),
-                "estimated_serving": float(item.get("estimated_serving", 1.0)),
+                "confidence": _clamp_confidence(item.get("confidence", 0.0)),
+                "estimated_serving": _clamp_serving(item.get("estimated_serving", 1.0)),
                 "has_soup": _coerce_flag(item.get("has_soup")),
                 "has_sauce": _coerce_flag(item.get("has_sauce")),
                 "nutrition": _normalize_nutrition(item.get("nutrition")),
