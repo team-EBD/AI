@@ -274,3 +274,34 @@ def test_nutrition_missing_or_invalid_kept_as_none(client, set_gemini, stub_down
     assert body["status"] == "success"
     assert [c["food_name"] for c in body["candidates"]] == ["양꼬치", "오이무침", "제육볶음"]
     assert all(c["nutrition"] is None for c in body["candidates"])
+
+
+def test_confidence_and_serving_clamped(client, set_gemini, stub_download):
+    """범위 밖 confidence/estimated_serving 은 클램프된다.
+
+    - confidence 퍼센트 표기(87) → 0.87 복원, 1 초과/음수 → 0~1 로 잘림
+      (미클램프 시 BE Numeric(5,4) overflow 로 분석 전체가 500)
+    - estimated_serving 상식 범위(0.1~10) 밖 → 1.0 폴백
+    """
+    stub_download()
+    set_gemini(
+        text=json.dumps(
+            {
+                "candidates": [
+                    {"food_name": "김치찌개", "confidence": 87, "estimated_serving": 1.5},
+                    {"food_index": 1, "food_name": "공기밥", "confidence": -0.2,
+                     "estimated_serving": 0},
+                    {"food_index": 2, "food_name": "샐러드", "confidence": 0.6,
+                     "estimated_serving": 100},
+                ]
+            }
+        )
+    )
+    body = _analyze(client).json()
+    assert body["status"] == "success"
+    by_name = {c["food_name"]: c for c in body["candidates"]}
+    assert by_name["김치찌개"]["confidence"] == 0.87  # 퍼센트 표기 복원
+    assert by_name["김치찌개"]["estimated_serving"] == 1.5  # 정상값은 유지
+    assert by_name["공기밥"]["confidence"] == 0.0  # 음수 → 하한
+    assert by_name["공기밥"]["estimated_serving"] == 1.0  # 0 → 폴백
+    assert by_name["샐러드"]["estimated_serving"] == 1.0  # 100인분 → 폴백
