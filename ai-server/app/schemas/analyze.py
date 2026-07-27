@@ -44,6 +44,19 @@ class CandidateNutrition(BaseModel):
     fat: float
 
 
+class BoundingBox(BaseModel):
+    """사진 속 음식의 위치 (이미지 좌상단 기준 정규화 좌표 0.0~1.0).
+
+    FE 가 사진 확대 보기에서 음식 이름을 해당 위치에 오버레이하는 데 쓴다.
+    Gemini 가 주는 box_2d([ymin, xmin, ymax, xmax], 0~1000)를 변환한 값이다.
+    """
+
+    x: float
+    y: float
+    width: float
+    height: float
+
+
 class Candidate(BaseModel):
     # 사진 속 몇 번째 음식에 대한 예측인지 (0부터 연속). 같은 food_index 를 가진
     # 후보들은 "같은 음식에 대한 대체 예측"이며 음식 하나당 최대 3개까지만 반환한다.
@@ -55,6 +68,8 @@ class Candidate(BaseModel):
     # 노출을 판단하는 데 쓴다. 판별 불가·구모델 응답은 True(버튼 노출 유지).
     has_soup: bool = True
     has_sauce: bool = True
+    # 사진 속 위치. 좌표를 못 얻거나 형식이 어긋나면 None (오버레이만 생략된다)
+    bbox: Optional[BoundingBox] = None
     # 검증 실패 시 None (후보 자체는 유지 — vision._normalize_nutrition 참고)
     nutrition: Optional[CandidateNutrition] = None
 

@@ -305,3 +305,72 @@ def test_confidence_and_serving_clamped(client, set_gemini, stub_download):
     assert by_name["공기밥"]["confidence"] == 0.0  # 음수 → 하한
     assert by_name["공기밥"]["estimated_serving"] == 1.0  # 0 → 폴백
     assert by_name["샐러드"]["estimated_serving"] == 1.0  # 100인분 → 폴백
+
+
+def test_bbox_normalized_from_box_2d(client, set_gemini, stub_download):
+    """box_2d([ymin, xmin, ymax, xmax], 0~1000) → bbox(x/y/width/height, 0~1)."""
+    stub_download()
+    set_gemini(
+        text=json.dumps(
+            {
+                "candidates": [
+                    {"food_name": "김치찌개", "confidence": 0.9, "box_2d": [120, 40, 620, 480]},
+                    # 0~1 스케일로 답하는 모델도 수용
+                    {"food_index": 1, "food_name": "공기밥", "confidence": 0.95,
+                     "box_2d": [0.43, 0.52, 0.78, 0.9]},
+                ]
+            }
+        )
+    )
+    body = _analyze(client).json()
+    assert body["status"] == "success"
+    by_name = {c["food_name"]: c for c in body["candidates"]}
+    assert by_name["김치찌개"]["bbox"] == {"x": 0.04, "y": 0.12, "width": 0.44, "height": 0.5}
+    assert by_name["공기밥"]["bbox"] == {"x": 0.52, "y": 0.43, "width": 0.38, "height": 0.35}
+
+
+def test_bbox_invalid_or_missing_is_none(client, set_gemini, stub_download):
+    """좌표가 없거나 형식이 어긋나면 bbox 는 None — 후보 자체는 유지된다."""
+    stub_download()
+    set_gemini(
+        text=json.dumps(
+            {
+                "candidates": [
+                    {"food_name": "김치찌개", "confidence": 0.9},  # 생략
+                    {"food_index": 1, "food_name": "공기밥", "confidence": 0.9, "box_2d": [1, 2, 3]},
+                    {"food_index": 2, "food_name": "샐러드", "confidence": 0.9,
+                     "box_2d": ["a", "b", "c", "d"]},
+                    # 넓이/높이가 0 이하인 상자는 오버레이가 불가능하므로 버린다
+                    {"food_index": 3, "food_name": "탕수육", "confidence": 0.9,
+                     "box_2d": [500, 500, 500, 500]},
+                ]
+            }
+        )
+    )
+    body = _analyze(client).json()
+    assert body["status"] == "success"
+    assert len(body["candidates"]) == 4
+    assert all(c["bbox"] is None for c in body["candidates"])
+
+
+def test_bbox_shared_across_predictions_of_same_food(client, set_gemini, stub_download):
+    """같은 음식(food_index)의 대체 예측은 하나에만 좌표가 있어도 공유한다."""
+    stub_download()
+    set_gemini(
+        text=json.dumps(
+            {
+                "candidates": [
+                    {"food_index": 0, "food_name": "김치찌개", "confidence": 0.9,
+                     "box_2d": [100, 100, 500, 500]},
+                    {"food_index": 0, "food_name": "된장찌개", "confidence": 0.4},
+                    {"food_index": 1, "food_name": "공기밥", "confidence": 0.95},
+                ]
+            }
+        )
+    )
+    body = _analyze(client).json()
+    by_name = {c["food_name"]: c for c in body["candidates"]}
+    expected = {"x": 0.1, "y": 0.1, "width": 0.4, "height": 0.4}
+    assert by_name["김치찌개"]["bbox"] == expected
+    assert by_name["된장찌개"]["bbox"] == expected  # 같은 음식이므로 보완됨
+    assert by_name["공기밥"]["bbox"] is None  # 다른 음식은 보완하지 않는다
