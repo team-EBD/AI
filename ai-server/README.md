@@ -75,6 +75,9 @@ analyze 실패 응답에는 `fallback_action: "manual_food_search"` 가 함께 �
 - 응답은 JSON 만 (코드펜스 방어 파싱 포함).
 - 음식이 아니면 `candidates` 빈 배열 → `not_food`.
 - 음식명/메뉴명은 한국어, 후보 최대 3개.
+- 음식마다 `box_2d`(`[ymin, xmin, ymax, xmax]`, 0~1000)를 받아 정규화 좌표
+  `bbox`(`{x, y, width, height}`, 0.0~1.0)로 변환해 응답한다. 좌표를 못 얻으면
+  `bbox: null` (후보는 유지 — FE 는 오버레이만 생략).
 - 추천 응답에 진단/치료/처방 표현 금지 + `caution_text` 첨부.
 
 ## 폴더 구조

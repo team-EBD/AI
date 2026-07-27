@@ -34,6 +34,7 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
       "estimated_serving": 1.0,
       "has_soup": true,
       "has_sauce": false,
+      "box_2d": [120, 40, 620, 480],
       "nutrition": {
         "base_serving": "1인분(400g)",
         "calories": 320,
@@ -49,6 +50,7 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
       "estimated_serving": 1.0,
       "has_soup": true,
       "has_sauce": false,
+      "box_2d": [120, 40, 620, 480],
       "nutrition": {
         "base_serving": "1인분(400g)",
         "calories": 250,
@@ -64,6 +66,7 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
       "estimated_serving": 1.0,
       "has_soup": false,
       "has_sauce": false,
+      "box_2d": [430, 520, 780, 900],
       "nutrition": {
         "base_serving": "1공기(210g)",
         "calories": 310,
@@ -86,6 +89,11 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
 - has_soup 는 그 음식에 국물이 있는지(찌개/국/탕/국물 있는 면 요리 등),
   has_sauce 는 소스·양념이 있는지(뿌려져 있거나 찍어 먹는 소스, 양념 범벅 등)를
   나타내는 불리언입니다. 확실하지 않으면 true 로 판단하세요.
+- box_2d 는 사진에서 그 음식이 차지하는 영역의 경계 상자입니다.
+  [ymin, xmin, ymax, xmax] 순서의 정수 4개이며, 이미지 좌상단을 (0, 0),
+  우하단을 (1000, 1000) 으로 정규화한 값입니다. 같은 food_index 의 대체
+  예측들은 같은 음식을 가리키므로 동일한 box_2d 를 사용하세요.
+  위치를 특정하기 어려우면 box_2d 를 생략하세요.
 - nutrition 은 해당 음식 1인분 기준의 영양 추정치입니다. base_serving 은
   기준량 설명(예: "1인분(400g)"), calories 는 kcal, carbs/protein/fat 은 g 단위입니다.
   일반적인 한국 음식 기준으로 현실적인 값을 추정하세요.
@@ -144,6 +152,33 @@ def _normalize_nutrition(raw) -> dict | None:
     return nutrition
 
 
+def _normalize_bbox(raw) -> dict | None:
+    """Gemini box_2d([ymin, xmin, ymax, xmax], 0~1000) → 정규화 bbox(0.0~1.0).
+
+    좌표를 못 얻거나 형식이 어긋나면 None — 후보 자체는 유지하고 오버레이만
+    생략된다. 모델이 이미 0~1 스케일로 답하는 경우도 수용한다.
+    """
+    if not isinstance(raw, (list, tuple)) or len(raw) != 4:
+        return None
+    try:
+        values = [float(v) for v in raw]
+    except (TypeError, ValueError):
+        return None
+    if any(v != v for v in values):  # NaN
+        return None
+    # 0~1 스케일로 답한 경우(모든 값이 1 이하)를 제외하고 1000 스케일로 본다
+    scale = 1.0 if max(values) <= 1.0 else 1000.0
+    y_min, x_min, y_max, x_max = (min(1.0, max(0.0, v / scale)) for v in values)
+    if x_max <= x_min or y_max <= y_min:
+        return None
+    return {
+        "x": round(x_min, 4),
+        "y": round(y_min, 4),
+        "width": round(x_max - x_min, 4),
+        "height": round(y_max - y_min, 4),
+    }
+
+
 def _coerce_flag(value, default: bool = True) -> bool:
     """LLM 이 준 불리언 플래그 방어적 파싱. 형식이 어긋나면 default(True=버튼 노출)."""
     if isinstance(value, bool):
@@ -188,6 +223,7 @@ def _normalize_candidates(raw: list) -> list[dict]:
     - 서로 다른 음식은 등장 순서대로 최대 MAX_FOODS 개
     - 같은 음식의 대체 예측은 최대 MAX_PREDICTIONS_PER_FOOD 개
     - 반환되는 food_index 는 0부터 연속되도록 재부여한다
+    - bbox 는 같은 음식(food_index)의 다른 예측 값으로 보완한다 (같은 위치이므로)
     """
     groups: dict[int, list[dict]] = {}
     order: list[int] = []
@@ -203,6 +239,7 @@ def _normalize_candidates(raw: list) -> list[dict]:
                 "estimated_serving": _clamp_serving(item.get("estimated_serving", 1.0)),
                 "has_soup": _coerce_flag(item.get("has_soup")),
                 "has_sauce": _coerce_flag(item.get("has_sauce")),
+                "bbox": _normalize_bbox(item.get("box_2d")),
                 "nutrition": _normalize_nutrition(item.get("nutrition")),
             }
         except (KeyError, TypeError, ValueError):
@@ -220,8 +257,17 @@ def _normalize_candidates(raw: list) -> list[dict]:
 
     normalized: list[dict] = []
     for new_index, original_index in enumerate(order):
-        for candidate in groups[original_index]:
-            normalized.append({**candidate, "food_index": new_index})
+        group = groups[original_index]
+        # 같은 음식의 대체 예측끼리는 위치가 같으므로, 하나라도 좌표가 있으면 공유한다
+        shared_bbox = next((c["bbox"] for c in group if c["bbox"]), None)
+        for candidate in group:
+            normalized.append(
+                {
+                    **candidate,
+                    "food_index": new_index,
+                    "bbox": candidate["bbox"] or shared_bbox,
+                }
+            )
     return normalized
 
 
