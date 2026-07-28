@@ -44,11 +44,14 @@ jobs:
         uses: cloudtype-github-actions/connect@v1
         with:
           token: ${{ secrets.CLOUDTYPE_TOKEN }}
-          ghtoken: ${{ secrets.GITHUB_TOKEN }}
+          # 기본 GITHUB_TOKEN 은 배포키(admin:public_key) 권한이 없어 connect 가 실패한다.
+          # repo·workflow·admin:public_key 스코프의 PAT(classic)를 GHP_TOKEN 시크릿으로 넣는다.
+          ghtoken: ${{ secrets.GHP_TOKEN }}
       - name: Deploy
         uses: cloudtype-github-actions/deploy@v1
         with:
           token: ${{ secrets.CLOUDTYPE_TOKEN }}
+          # 형식: <스페이스>/<프로젝트> (예: myspace/eatlog)
           project: ${{ vars.CLOUDTYPE_PROJECT }}
           stage: ${{ vars.CLOUDTYPE_STAGE }}
           file: ./cloudtype.yaml
