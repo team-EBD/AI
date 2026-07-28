@@ -105,13 +105,24 @@ ai-server/
 
 | 종류 | 이름 | 값 |
 | --- | --- | --- |
-| Secret | `CLOUDTYPE_TOKEN` | cloudtype API 키 |
-| Variable | `CLOUDTYPE_PROJECT` | cloudtype 프로젝트 이름 |
+| Secret | `CLOUDTYPE_TOKEN` | cloudtype API 키 (스페이스 설정 → 인증 → 새 API 키) |
+| Secret | `GHP_TOKEN` | GitHub PAT(classic), 스코프 `repo`·`workflow`·`admin:public_key` |
+| Variable | `CLOUDTYPE_PROJECT` | **`<스페이스>/<프로젝트>`** 형식 |
 | Variable | `CLOUDTYPE_STAGE` | 스테이지 이름 (기본 스테이지면 생략 가능) |
+
+`GHP_TOKEN` 은 `connect` 액션이 배포키를 등록하는 데 쓴다. 기본 `GITHUB_TOKEN` 은
+`admin:public_key` 권한이 없어 대체할 수 없다. PAT 만료 시 배포가 멈춘다.
 
 `CLOUDTYPE_PROJECT` 를 비워 두면 배포 잡은 건너뛰고 테스트만 돈다. cloudtype 대시보드의
 GitHub 자동배포를 이미 쓰고 있다면 그대로 두는 편이 낫다(중복 배포 방지).
 
 **배포 스펙은 저장소 루트의 `cloudtype.yaml` 이며, 배포 시 앱 설정을 덮어쓴다.**
-`GEMINI_API_KEY`·`DATABASE_URL` 은 리포에 없고 대시보드에만 있으므로, 자동배포를 켜기 전에
-현재 설정과 대조해 스펙을 맞출 것.
+리포에 든 파일은 손으로 쓴 골격이므로 그대로 쓰면 안 된다. **cloudtype 대시보드에서 해당
+서비스를 열고 `CLI` 탭에 생성돼 있는 스펙을 복사해 교체할 것.** 특히 `GEMINI_API_KEY`·
+`DATABASE_URL` 은 리포에 없고 대시보드에만 있어(`.env` 는 gitignore), 손으로 쓴 스펙으로
+배포하면 유실된다.
+
+### 더 단순한 대안
+cloudtype 대시보드에서 GitHub 저장소를 연결하고 배포 브랜치를 `dev` 로 지정하면
+GitHub Actions 없이도 자동 배포된다. GitHub Actions 를 쓰는 이유는 배포 전에 pytest 를
+게이트로 걸 수 있다는 점이며, 둘을 동시에 켜면 이중 배포가 되니 하나만 쓸 것.
