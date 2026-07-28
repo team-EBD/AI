@@ -95,3 +95,23 @@ ai-server/
 ├── requirements.txt
 └── Dockerfile
 ```
+
+## CI/CD (GitHub Actions → cloudtype)
+
+`.github/workflows/deploy.yml` 이 `dev` 푸시마다 pytest 를 돌리고, 저장소 변수
+`CLOUDTYPE_PROJECT` 가 설정돼 있으면 cloudtype 에 배포한다.
+
+필요한 설정 (Settings → Secrets and variables → Actions):
+
+| 종류 | 이름 | 값 |
+| --- | --- | --- |
+| Secret | `CLOUDTYPE_TOKEN` | cloudtype API 키 |
+| Variable | `CLOUDTYPE_PROJECT` | cloudtype 프로젝트 이름 |
+| Variable | `CLOUDTYPE_STAGE` | 스테이지 이름 (기본 스테이지면 생략 가능) |
+
+`CLOUDTYPE_PROJECT` 를 비워 두면 배포 잡은 건너뛰고 테스트만 돈다. cloudtype 대시보드의
+GitHub 자동배포를 이미 쓰고 있다면 그대로 두는 편이 낫다(중복 배포 방지).
+
+**배포 스펙은 저장소 루트의 `cloudtype.yaml` 이며, 배포 시 앱 설정을 덮어쓴다.**
+`GEMINI_API_KEY`·`DATABASE_URL` 은 리포에 없고 대시보드에만 있으므로, 자동배포를 켜기 전에
+현재 설정과 대조해 스펙을 맞출 것.
