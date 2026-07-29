@@ -20,6 +20,12 @@ class UserEatingHabits(BaseModel):
     leftover_frequency: Optional[str] = None
 
 
+class ParseMealRequest(BaseModel):
+    """자연어 식사 서술 파싱 요청 ("김밥 한 줄이랑 라면 반 개")."""
+
+    text: str = Field(..., min_length=1, max_length=200)
+
+
 class AnalyzeRequest(BaseModel):
     # 스킴(http/https) 검증은 서비스 계층에서 수행한다.
     # pydantic 에서 거부하면 422 가 되어 200-failed(provider_error) 계약이 깨지기 때문.

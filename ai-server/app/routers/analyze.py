@@ -14,8 +14,9 @@ from ..schemas.analyze import (
     AnalyzeFailedResponse,
     AnalyzeRequest,
     AnalyzeSuccessResponse,
+    ParseMealRequest,
 )
-from ..services import vision
+from ..services import parse_text, vision
 
 router = APIRouter(
     prefix="/internal", tags=["analyze"], dependencies=[Depends(verify_internal_token)]
@@ -30,3 +31,9 @@ AnalyzeResponse = Annotated[
 async def analyze(req: AnalyzeRequest) -> dict:
     # 성공/실패 모두 200 으로 반환 (Backend 가 status 로 분기)
     return await vision.analyze(req.image_url)
+
+
+@router.post("/parse-meal", response_model=AnalyzeResponse)
+async def parse_meal(req: ParseMealRequest) -> dict:
+    """자연어 식사 서술 → 음식 후보 (응답 계약은 analyze 와 동일)."""
+    return await parse_text.parse(req.text)
