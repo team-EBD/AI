@@ -48,7 +48,8 @@ _MEAL_TIMING_CATEGORIES = {
 # 알 수 없는/누락된 meal_timing 은 .get(meal_timing, set()) 으로 가산점 0 처리된다.
 
 # LLM 에 넘길 상위 후보 수(스코어링 후 상위 N개만 전달).
-_TOP_N = 8
+# 공공DB 적재(2026-08-01)로 후보 풀이 카테고리당 수천 건이 되어 8 → 12 로 상향.
+_TOP_N = 12
 
 
 def _score_candidate(cal: float, protein: float, db_category, gaps: dict, meal_timing: str) -> float:
@@ -99,15 +100,25 @@ def _select_candidates(rows: list, summary, meal_timing: str, preferred_category
         score = _score_candidate(cal, protein, r.get("category"), gaps, meal_timing)
         scored.append((score, r, cal, _make_hint(cal, protein, gaps)))
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [
-        CandidateMenu(
-            name=str(r["name"]),
-            category=preferred_category,  # 응답 category 는 요청값으로 통일
-            estimated_calories=int(round(cal)),
-            score_reason_hint=hint,
+    # 같은 이름 중복 제거(공공DB 는 동일 메뉴가 브랜드·조사연도별로 여러 행) — 최고 점수 1건만
+    seen_names: set[str] = set()
+    result = []
+    for _, r, cal, hint in scored:
+        name = str(r["name"])
+        if name in seen_names:
+            continue
+        seen_names.add(name)
+        result.append(
+            CandidateMenu(
+                name=name,
+                category=preferred_category,  # 응답 category 는 요청값으로 통일
+                estimated_calories=int(round(cal)),
+                score_reason_hint=hint,
+            )
         )
-        for _, r, cal, hint in scored[:_TOP_N]
-    ]
+        if len(result) >= _TOP_N:
+            break
+    return result
 
 
 _MEAL_TIMING_LABELS = {

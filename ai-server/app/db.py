@@ -26,18 +26,20 @@ def get_engine() -> Engine:
 
 
 # 원본 신뢰 데이터 조회. 스코어링을 위해 protein·category 까지 함께 가져온다.
+# ORDER BY random(): 공공DB 적재로 카테고리당 수천 건이 되어(2026-08-01, 총 4.7만)
+# id 순 고정 조회는 매번 같은 후보만 반환한다 → 무작위 표본에서 스코어링으로 상위를 추린다.
 _CANDIDATE_SQL = text(
     """
     SELECT name, calories, protein, category
     FROM nutrition_items
     WHERE category IN :categories
-    ORDER BY id
+    ORDER BY random()
     LIMIT :limit
     """
 ).bindparams(bindparam("categories", expanding=True))
 
 
-def fetch_candidate_menus(categories: List[str], limit: int = 50) -> List[dict]:
+def fetch_candidate_menus(categories: List[str], limit: int = 300) -> List[dict]:
     """주어진 DB 카테고리 묶음에 속하는 후보 메뉴를 반환.
 
     각 항목: {name, calories, protein, category}. 스코어링은 상위(서비스)에서 수행한다.
