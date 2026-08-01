@@ -30,6 +30,8 @@ class AnalyzeRequest(BaseModel):
     # 스킴(http/https) 검증은 서비스 계층에서 수행한다.
     # pydantic 에서 거부하면 422 가 되어 200-failed(provider_error) 계약이 깨지기 때문.
     image_url: str = Field(..., description="분석할 음식 이미지 URL (http/https 만 허용)")
+    # 사진과 함께 적은 식사 설명 — 음식 식별·수량 힌트로 사용 (서비스에서 200자 절단)
+    user_text: Optional[str] = Field(default=None, description="사용자가 함께 적은 식사 설명")
     user_eating_habits: Optional[UserEatingHabits] = Field(
         default=None,
         description="보정은 Backend 담당이므로 AI Server에서는 사용하지 않음(수용만 함)",
