@@ -271,7 +271,28 @@ def _normalize_candidates(raw: list) -> list[dict]:
     return normalized
 
 
-async def analyze(image_url: str) -> dict:
+# 사진과 함께 온 사용자 설명의 최대 길이 (parse_text 와 동일 기준)
+USER_TEXT_MAX_LENGTH = 200
+
+
+def _user_text_part(user_text: str) -> str:
+    """사용자 설명을 분석 지시문으로 변환한다.
+
+    설명은 음식 식별·수량의 최우선 힌트다 — 사진만으로 애매한 메뉴(김치찌개 vs
+    된장찌개)를 확정하고, "반만 먹었어" 같은 수량 표현을 estimated_serving 에
+    반영하며, 사진 프레임 밖 음식("라면도 같이")도 후보에 추가하게 한다.
+    """
+    return (
+        "사용자가 사진과 함께 적은 식사 설명입니다. 다음 규칙으로 반영하세요:\n"
+        "- 음식 식별이 애매할 때는 설명에 적힌 음식명을 우선하세요.\n"
+        "- 설명의 수량 표현(반 개→0.5, 3인분→3.0 등)을 estimated_serving 에 반영하세요.\n"
+        "- 사진에 없지만 설명에 명시된 음식은 별도 food_index 후보로 추가하세요.\n"
+        "- 설명이 음식과 무관하면 무시하고 사진만으로 분석하세요.\n"
+        f'사용자 설명: "{user_text}"'
+    )
+
+
+async def analyze(image_url: str, user_text: str | None = None) -> dict:
     settings = get_settings()
     started = time.perf_counter()
 
@@ -304,12 +325,13 @@ async def analyze(image_url: str) -> dict:
         return fail("provider_error")
 
     # 2) Gemini Vision 호출 (JSON 강제 + thinking 제한 + timeout)
+    contents = [ANALYZE_PROMPT, gemini_client.image_part(image_bytes, mime_type)]
+    cleaned_text = (user_text or "").strip()[:USER_TEXT_MAX_LENGTH]
+    if cleaned_text:
+        contents.append(_user_text_part(cleaned_text))
     try:
         response = await asyncio.wait_for(
-            gemini_client.generate_json(
-                settings.gemini_model,
-                [ANALYZE_PROMPT, gemini_client.image_part(image_bytes, mime_type)],
-            ),
+            gemini_client.generate_json(settings.gemini_model, contents),
             timeout=settings.ai_timeout_seconds,
         )
     except asyncio.TimeoutError:
