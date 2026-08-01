@@ -78,6 +78,11 @@ jobs:
                   value: "10"
                 - name: DATABASE_URL
                   value: ${{ secrets.DATABASE_URL }}
+                # /internal/* 인증 토큰. BE 레포의 INTERNAL_TOKEN 시크릿과 **같은 값**
+                # 이어야 한다 — 값만 대시보드에 두면 한쪽만 바뀌어도 BE 호출이 전부
+                # 401 이 된다 (2026-08-01 추천 502 사고). 비면 검증 자체가 꺼진다.
+                - name: INTERNAL_TOKEN
+                  value: ${{ secrets.INTERNAL_TOKEN }}
               buildenv: []
             context:
               git:
