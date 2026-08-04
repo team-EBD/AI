@@ -72,6 +72,12 @@ class Candidate(BaseModel):
     food_name: str
     confidence: float
     estimated_serving: float
+    # 사진에 담긴 **절대량**(g, 액체는 ml). estimated_serving 이 "1인분의 몇 배"인 것과
+    # 달리 기준이 필요 없다 — AI 가 생각하는 1인분과 BE 영양DB 의 1인분이 다르면
+    # 배수만으로는 계산이 어긋나기 때문이다(피자 1판 vs 1조각처럼 몇 배씩 벌어진다).
+    # BE 가 이 값을 매칭된 영양DB 항목의 기준량으로 나눠 배수를 다시 계산한다.
+    # 추정 불가·구모델 응답은 None → BE 가 estimated_serving 을 그대로 쓴다.
+    estimated_serving_g: Optional[float] = None
     # 국물/소스가 실제로 있는 음식인지 — FE 가 "국물 제외/소스 제외" 보정 버튼
     # 노출을 판단하는 데 쓴다. 판별 불가·구모델 응답은 True(버튼 노출 유지).
     has_soup: bool = True

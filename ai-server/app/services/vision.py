@@ -32,6 +32,7 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
       "food_name": "김치찌개",
       "confidence": 0.87,
       "estimated_serving": 1.0,
+      "estimated_serving_g": 400,
       "has_soup": true,
       "has_sauce": false,
       "box_2d": [120, 40, 620, 480],
@@ -48,6 +49,7 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
       "food_name": "된장찌개",
       "confidence": 0.41,
       "estimated_serving": 1.0,
+      "estimated_serving_g": 400,
       "has_soup": true,
       "has_sauce": false,
       "box_2d": [120, 40, 620, 480],
@@ -64,6 +66,7 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
       "food_name": "공기밥",
       "confidence": 0.95,
       "estimated_serving": 1.0,
+      "estimated_serving_g": 400,
       "has_soup": false,
       "has_sauce": false,
       "box_2d": [430, 520, 780, 900],
@@ -86,6 +89,10 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
 - food_name 은 반드시 한국어로 작성하세요.
 - confidence 는 0.0~1.0 사이의 확신도입니다.
 - estimated_serving 은 1인분을 1.0 기준으로 한 추정 섭취량입니다.
+- estimated_serving_g 는 **사진에 실제로 담긴 양의 절대량**입니다(고체 g, 액체 ml).
+  1인분의 몇 배인지가 아니라 눈에 보이는 그대로의 양을 숫자로 적으세요.
+  예: 피자 2조각이면 240, 밥 한 공기면 210, 라면 한 그릇이면 500.
+  이 값이 가장 중요합니다 — 양을 가늠하기 어려우면 null 로 두세요.
 - has_soup 는 그 음식에 국물이 있는지(찌개/국/탕/국물 있는 면 요리 등),
   has_sauce 는 소스·양념이 있는지(뿌려져 있거나 찍어 먹는 소스, 양념 범벅 등)를
   나타내는 불리언입니다. 확실하지 않으면 true 로 판단하세요.
@@ -216,6 +223,23 @@ def _clamp_serving(raw) -> float:
     return value
 
 
+# 절대량(g/ml) 상식 범위 — 한 끼에 담기는 양. 벗어나면 신뢰 불가로 보고 None.
+SERVING_G_MIN, SERVING_G_MAX = 5.0, 3000.0
+
+
+def _clamp_serving_g(raw) -> float | None:
+    """사진 속 절대량 추정치. 값이 없거나 상식 밖이면 None (BE 가 배수로 폴백)."""
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not (SERVING_G_MIN <= value <= SERVING_G_MAX):
+        return None
+    return round(value, 1)
+
+
 def _normalize_candidates(raw: list) -> list[dict]:
     """음식(food_index) 단위로 그룹핑해 정규화한다.
 
@@ -237,6 +261,7 @@ def _normalize_candidates(raw: list) -> list[dict]:
                 "food_name": str(item["food_name"]),
                 "confidence": _clamp_confidence(item.get("confidence", 0.0)),
                 "estimated_serving": _clamp_serving(item.get("estimated_serving", 1.0)),
+                "estimated_serving_g": _clamp_serving_g(item.get("estimated_serving_g")),
                 "has_soup": _coerce_flag(item.get("has_soup")),
                 "has_sauce": _coerce_flag(item.get("has_sauce")),
                 "bbox": _normalize_bbox(item.get("box_2d")),
