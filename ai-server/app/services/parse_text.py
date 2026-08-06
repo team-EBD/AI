@@ -75,13 +75,33 @@ PARSE_PROMPT = """당신은 식단 기록 도우미입니다. 사용자가 먹�
 - nutrition 은 그 음식 1인분(estimated_serving 이 아닌 1.0) 기준 추정치입니다.
   base_serving 은 기준량 설명, calories 는 kcal, carbs/protein/fat 은 g.
   일반적인 한국 음식 기준으로 현실적인 값을 추정하세요.
+- estimated_serving_g 는 문장에 절대량이 **명시되었을 때만** 채우세요
+  (예: "삼겹살 300g" → 300, "우유 500ml" → 500). 절대량이 명시되지 않은 경우
+  ("반 개", "한 줄" 등)는 추측해서 채우지 말고 필드를 생략하세요.
 - 문장에서 음식을 찾을 수 없으면(음식과 무관한 문장) candidates 를 빈 배열([])로 반환하세요.
 """
+
+def _db_candidates_part(candidates: list) -> str:
+    """BE 가 문장에서 선(先)-매칭한 영양 DB 후보 → 프롬프트 파트.
+
+    AI 가 뽑는 음식명을 DB 명명과 정렬시켜 사후 매칭 실패(→ 추정 영양 폴백)를
+    줄인다. 기준량을 함께 줘서 "한 줄" 같은 수량이 우리 DB 기준의 배수로
+    계산되게 한다. 목록에 없는 음식은 자유 추출 — 억지 스냅 방지가 안전장치.
+    """
+    lines = "\n".join(f"- {c.name} (기준량: {c.base_serving})" for c in candidates)
+    return (
+        "[영양 DB 후보 목록]\n"
+        "아래는 우리 영양 DB에 있는 음식입니다. 문장의 음식이 이 목록에 있으면:\n"
+        "- food_name 을 목록의 이름 **글자 그대로** 사용하세요.\n"
+        "- estimated_serving 은 괄호의 기준량을 1.0 으로 하여 계산하세요.\n"
+        "문장의 음식이 목록에 없으면 목록에 억지로 맞추지 말고 자유롭게 추출하세요.\n"
+        f"{lines}"
+    )
 
 MAX_TEXT_LENGTH = 200
 
 
-async def parse(text: str) -> dict:
+async def parse(text: str, db_candidates: list | None = None) -> dict:
     settings = get_settings()
     started = time.perf_counter()
 
@@ -103,12 +123,14 @@ async def parse(text: str) -> dict:
         return fail("not_food")
     cleaned = cleaned[:MAX_TEXT_LENGTH]
 
+    contents = [PARSE_PROMPT]
+    if db_candidates:
+        contents.append(_db_candidates_part(db_candidates))
+    contents.append(f"사용자 문장: {cleaned}")
+
     try:
         response = await asyncio.wait_for(
-            gemini_client.generate_json(
-                settings.gemini_model,
-                [PARSE_PROMPT, f"사용자 문장: {cleaned}"],
-            ),
+            gemini_client.generate_json(settings.gemini_model, contents),
             timeout=settings.ai_timeout_seconds,
         )
     except asyncio.TimeoutError:

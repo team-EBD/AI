@@ -36,4 +36,4 @@ async def analyze(req: AnalyzeRequest) -> dict:
 @router.post("/parse-meal", response_model=AnalyzeResponse)
 async def parse_meal(req: ParseMealRequest) -> dict:
     """자연어 식사 서술 → 음식 후보 (응답 계약은 analyze 와 동일)."""
-    return await parse_text.parse(req.text)
+    return await parse_text.parse(req.text, req.db_candidates)
