@@ -20,10 +20,20 @@ class UserEatingHabits(BaseModel):
     leftover_frequency: Optional[str] = None
 
 
+class DbCandidate(BaseModel):
+    """BE 가 문장에서 선(先)-매칭한 영양 DB 후보 (이름·기준량)."""
+
+    name: str
+    base_serving: str  # 예: "1인분(230g)"
+
+
 class ParseMealRequest(BaseModel):
     """자연어 식사 서술 파싱 요청 ("김밥 한 줄이랑 라면 반 개")."""
 
     text: str = Field(..., min_length=1, max_length=200)
+    # 문장에 이름이 등장한 영양 DB 항목들 — AI 가 음식명·기준량을 여기에 정렬한다.
+    # 없거나 빈 목록이면 기존과 동일하게 자유 추출한다 (하위 호환).
+    db_candidates: Optional[List[DbCandidate]] = None
 
 
 class AnalyzeRequest(BaseModel):
