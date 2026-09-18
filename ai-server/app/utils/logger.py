@@ -53,7 +53,9 @@ def build_ai_call_log(
     """모든 응답에 첨부되는 AI 호출 로그를 생성한다.
 
     Args:
-        task_type: "analyze" | "recommend"
+        task_type: "analyze" | "analyze_clarifier" | "recommend"
+            ("analyze_clarifier" = 발견 돋보기로 후보를 1개 더 요청한 분석 호출.
+             BE 가 추가 AI 호출 비용을 따로 집계한다.)
         status: "success" | "failed"
         latency_ms: 엔드포인트 진입부터 응답 직전까지 측정한 처리시간(ms)
         model_name: 실제 사용한 Gemini 모델명 (설정값에서 유입)
