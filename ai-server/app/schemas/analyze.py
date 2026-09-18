@@ -10,7 +10,7 @@
 """
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class UserEatingHabits(BaseModel):
@@ -46,6 +46,26 @@ class AnalyzeRequest(BaseModel):
         default=None,
         description="보정은 Backend 담당이므로 AI Server에서는 사용하지 않음(수용만 함)",
     )
+    # 후보 깊이 — 게이미피케이션 지원 스킬 "발견 돋보기"(food_clarifier)가 켜진
+    # 기록에서만 "clarifier" 로 온다. 음식 하나당 대체 후보를 1개 더 반환한다.
+    # 값 검증은 image_url 과 같은 이유로 서비스 계층에서 한다: Literal 로 두면
+    # 알 수 없는 값에 pydantic 이 422 를 내어 200-failed 계약이 깨지므로,
+    # 느슨한 문자열로 받고 서비스(vision.normalize_candidate_depth)에서 정규화한다.
+    # 필드를 보내지 않는 구버전 Backend 는 기본값 "standard" 로 기존과 동일하게 동작한다.
+    candidate_depth: Optional[str] = Field(
+        default="standard",
+        description='후보 깊이: "standard"(기본) | "clarifier"(후보 1개 더). 알 수 없는 값은 standard 로 취급',
+    )
+
+    @field_validator("candidate_depth", mode="before")
+    @classmethod
+    def _tolerate_any_candidate_depth(cls, value):
+        """문자열이 아닌 값(숫자 등)이 와도 422 를 내지 않는다.
+
+        None 으로 떨어뜨리면 서비스 계층이 standard 로 정규화한다 — 이 필드 때문에
+        분석 요청 전체가 422 가 되는 일이 없어야 한다(200-계약).
+        """
+        return value if isinstance(value, str) else None
 
 
 class CandidateNutrition(BaseModel):
@@ -78,6 +98,7 @@ class BoundingBox(BaseModel):
 class Candidate(BaseModel):
     # 사진 속 몇 번째 음식에 대한 예측인지 (0부터 연속). 같은 food_index 를 가진
     # 후보들은 "같은 음식에 대한 대체 예측"이며 음식 하나당 최대 3개까지만 반환한다.
+    # (요청이 candidate_depth="clarifier" 면 음식 하나당 최대 4개)
     food_index: int = 0
     food_name: str
     confidence: float

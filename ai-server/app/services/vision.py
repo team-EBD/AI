@@ -85,7 +85,7 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
 - 사진에 서로 다른 음식이 여러 개 있으면, 각 음식마다 food_index 를 0부터 순서대로
   부여하세요 (서로 다른 음식은 최대 5개까지).
 - 같은 음식에 대한 대체 예측(무엇인지 헷갈리는 경우)은 같은 food_index 로 묶고,
-  가능성이 높은 순서로 음식 하나당 최대 3개까지만 포함하세요.
+  가능성이 높은 순서로 음식 하나당 최대 __MAX_CANDIDATES__개까지만 포함하세요.
 - food_name 은 반드시 한국어로 작성하세요.
 - confidence 는 0.0~1.0 사이의 확신도입니다.
 - estimated_serving 은 1인분을 1.0 기준으로 한 추정 섭취량입니다.
@@ -107,9 +107,61 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
 - 사진에 음식이 없거나 음식이 아니면 candidates 를 반드시 빈 배열([])로 반환하세요.
 """
 
-# 사진 하나에서 구분하는 음식 수 상한 / 음식 하나당 대체 예측 수 상한
+# 사진 하나에서 구분하는 음식 수 상한
 MAX_FOODS = 5
-MAX_PREDICTIONS_PER_FOOD = 3
+
+# 음식 하나당 대체 예측 수 상한 (candidate_depth 별).
+# clarifier = 게이미피케이션 지원 스킬 "발견 돋보기" — 후보를 딱 1개 더 보여준다.
+STANDARD_MAX_CANDIDATES = 3
+CLARIFIER_MAX_CANDIDATES = 4
+
+DEPTH_STANDARD = "standard"
+DEPTH_CLARIFIER = "clarifier"
+
+_MAX_CANDIDATES_BY_DEPTH = {
+    DEPTH_STANDARD: STANDARD_MAX_CANDIDATES,
+    DEPTH_CLARIFIER: CLARIFIER_MAX_CANDIDATES,
+}
+
+# ai_call_log.task_type — BE 가 돋보기 추가 호출 비용을 따로 집계할 수 있게 구분한다.
+# 기존 값("analyze")의 철자는 그대로 둔다.
+_TASK_TYPE_BY_DEPTH = {
+    DEPTH_STANDARD: "analyze",
+    DEPTH_CLARIFIER: "analyze_clarifier",
+}
+
+# 기존 이름 하위 호환 (standard 기준 상한)
+MAX_PREDICTIONS_PER_FOOD = STANDARD_MAX_CANDIDATES
+
+# 프롬프트에서 후보 상한 숫자가 들어갈 자리 (JSON 예시의 중괄호 때문에 format 대신 치환)
+_MAX_CANDIDATES_TOKEN = "__MAX_CANDIDATES__"
+
+# clarifier 일 때만 덧붙이는 지시 — 억지로 채우지는 말라는 단서를 함께 준다.
+CLARIFIER_PROMPT_SUFFIX = (
+    "- 이번 분석은 후보를 한 번 더 살펴보는 모드입니다. 음식 하나가 무엇인지 헷갈린다면\n"
+    f"  대체 예측을 하나 더(최대 {CLARIFIER_MAX_CANDIDATES}개까지) 포함하세요.\n"
+    "  다만 그럴듯한 후보가 더 없으면 억지로 채우지 말고 있는 만큼만 반환하세요.\n"
+)
+
+
+def normalize_candidate_depth(raw) -> str:
+    """요청의 candidate_depth 를 정규화한다.
+
+    알 수 없는 값·None·비문자열은 모두 "standard" 로 떨어뜨린다 — 422 를 내지 않고
+    200-계약을 유지하기 위해서다(구버전/오타 Backend 도 기존 동작 그대로).
+    """
+    if isinstance(raw, str) and raw.strip().lower() == DEPTH_CLARIFIER:
+        return DEPTH_CLARIFIER
+    return DEPTH_STANDARD
+
+
+def _build_prompt(depth: str) -> str:
+    """후보 상한을 반영한 분석 프롬프트를 만든다."""
+    max_candidates = _MAX_CANDIDATES_BY_DEPTH[depth]
+    prompt = ANALYZE_PROMPT.replace(_MAX_CANDIDATES_TOKEN, str(max_candidates))
+    if depth == DEPTH_CLARIFIER:
+        prompt += CLARIFIER_PROMPT_SUFFIX
+    return prompt
 
 
 def _is_allowed_url(url: str) -> bool:
@@ -240,12 +292,13 @@ def _clamp_serving_g(raw) -> float | None:
     return round(value, 1)
 
 
-def _normalize_candidates(raw: list) -> list[dict]:
+def _normalize_candidates(raw: list, max_per_food: int = STANDARD_MAX_CANDIDATES) -> list[dict]:
     """음식(food_index) 단위로 그룹핑해 정규화한다.
 
     - food_index 가 없거나 이상하면 0 으로 간주 (구모델/부분 응답 호환)
     - 서로 다른 음식은 등장 순서대로 최대 MAX_FOODS 개
-    - 같은 음식의 대체 예측은 최대 MAX_PREDICTIONS_PER_FOOD 개
+    - 같은 음식의 대체 예측은 최대 max_per_food 개 (candidate_depth 에 따라 3 또는 4)
+      — 정렬·신뢰도 계산은 그대로이고 상한만 달라진다
     - 반환되는 food_index 는 0부터 연속되도록 재부여한다
     - bbox 는 같은 음식(food_index)의 다른 예측 값으로 보완한다 (같은 위치이므로)
     """
@@ -276,7 +329,7 @@ def _normalize_candidates(raw: list) -> list[dict]:
                 continue
             groups[food_index] = []
             order.append(food_index)
-        if len(groups[food_index]) >= MAX_PREDICTIONS_PER_FOOD:
+        if len(groups[food_index]) >= max_per_food:
             continue
         groups[food_index].append(candidate)
 
@@ -317,9 +370,14 @@ def _user_text_part(user_text: str) -> str:
     )
 
 
-async def analyze(image_url: str, user_text: str | None = None) -> dict:
+async def analyze(
+    image_url: str, user_text: str | None = None, candidate_depth: str | None = None
+) -> dict:
     settings = get_settings()
     started = time.perf_counter()
+    # 알 수 없는 값은 standard 로 (422 없이 200-계약 유지)
+    depth = normalize_candidate_depth(candidate_depth)
+    task_type = _TASK_TYPE_BY_DEPTH[depth]
 
     def elapsed_ms() -> int:
         return int((time.perf_counter() - started) * 1000)
@@ -330,7 +388,7 @@ async def analyze(image_url: str, user_text: str | None = None) -> dict:
             "reason": reason,
             "fallback_action": FALLBACK_ACTION,
             "ai_call_log": build_ai_call_log(
-                "analyze", "failed", elapsed_ms(), model_name=settings.gemini_model
+                task_type, "failed", elapsed_ms(), model_name=settings.gemini_model
             ),
         }
 
@@ -350,7 +408,7 @@ async def analyze(image_url: str, user_text: str | None = None) -> dict:
         return fail("provider_error")
 
     # 2) Gemini Vision 호출 (JSON 강제 + thinking 제한 + timeout)
-    contents = [ANALYZE_PROMPT, gemini_client.image_part(image_bytes, mime_type)]
+    contents = [_build_prompt(depth), gemini_client.image_part(image_bytes, mime_type)]
     cleaned_text = (user_text or "").strip()[:USER_TEXT_MAX_LENGTH]
     if cleaned_text:
         contents.append(_user_text_part(cleaned_text))
@@ -373,7 +431,9 @@ async def analyze(image_url: str, user_text: str | None = None) -> dict:
         return fail(exc.reason)
 
     # 4) candidates 정규화 — 음식이 아니면 빈 배열 → not_food
-    candidates = _normalize_candidates(data.get("candidates", []) or [])
+    candidates = _normalize_candidates(
+        data.get("candidates", []) or [], _MAX_CANDIDATES_BY_DEPTH[depth]
+    )
     if not candidates:
         return fail("not_food")
 
@@ -382,6 +442,6 @@ async def analyze(image_url: str, user_text: str | None = None) -> dict:
         "draft_notice": "AI가 분석한 기록 초안입니다.",
         "candidates": candidates,
         "ai_call_log": build_ai_call_log(
-            "analyze", "success", elapsed_ms(), model_name=settings.gemini_model
+            task_type, "success", elapsed_ms(), model_name=settings.gemini_model
         ),
     }
