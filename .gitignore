@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# 에디터
+*.code-workspace
+
+# Claude Code 로컬 설정 / 개인 툴 설정
+.claude/
+.mcp.json
+
+# 환경변수·비밀값 (안전망 — 하위 폴더 포함)
+.env
+**/.env
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]

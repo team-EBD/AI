@@ -1,0 +1,169 @@
+name: Test & Deploy
+
+# main 에 푸시(=dev→main PR 머지)되면 pytest 를 돌리고, 통과하면 AWS EC2 에 배포한다 (deploy-aws 잡). dev 는 테스트만.
+#
+# 🚨 cloudtype 배포는 2026-09-05 부터 **수동 실행(workflow_dispatch)에서만** 일어난다.
+#    이유: 아래 배포 스펙이 cloudtype 앱 설정을 통째로 덮어쓰는데, 2026-08-27 AWS
+#    컷오버(SCRUM-248)로 cloudtype AI 는 대시보드에서 **RDS** 를 바라보도록 바뀌었다.
+#    그런데 여기서 주입하는 DATABASE_URL 시크릿은 2026-07-28 이후 갱신된 적이 없어
+#    옛 cloudtype Postgres 를 가리킨다 — 배포되는 순간 운영 DB 연결이 되돌아간다.
+#    AI 의 마지막 dev 배포가 08-06(컷오버 이전)이라 아직 터지지 않았을 뿐이고,
+#    다음 dev 푸시가 그 첫 번째가 된다. BE 는 09-05 에 실제로 겪었다 (SCRUM-256).
+#
+#    다시 자동 배포로 되돌리려면: DATABASE_URL 시크릿을 RDS 값으로 갱신하고
+#    `if` 조건에서 workflow_dispatch 제한을 빼면 된다.
+#    cloudtype 을 폐기한다면 이 워크플로째로 지우는 편이 낫다.
+#
+# ⚠️ deploy 잡은 저장소 변수 CLOUDTYPE_PROJECT 가 설정돼야만 실행된다.
+#    cloudtype 대시보드의 GitHub 자동배포를 이미 쓰고 있다면 이 잡은 중복이므로
+#    변수를 비워 둔 채로 두면 된다 (test 잡만 돌아간다).
+# 브랜치 역할 (2026-09-21 main 배포 전환 — BE 와 동일):
+#   feat/* → dev : 통합. 푸시·PR 에서 테스트만 돌고 **배포하지 않는다**.
+#   dev → main   : PR 로 올린다. 머지(=main 푸시)되면 AWS EC2 운영 배포. stage 는 쓰지 않는다.
+# 배포 권한의 최종 관문은 AWS 쪽이다: IAM 역할 eatlog-github-deploy 의 신뢰 정책이 허용한 브랜치만 로그인된다
+# (pjt_eatlog/deploy_aws/setup_github_deploy_branches.sh).
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+  workflow_dispatch: # 수동 재배포용
+
+jobs:
+  test:
+    name: pytest
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ai-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ai-server/requirements*.txt
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      - name: Run tests
+        # Gemini/DB 는 테스트에서 스텁으로 대체된다 (tests/conftest.py) — 외부 호출 없음
+        run: python -m pytest -q
+
+  deploy-aws:
+    name: AWS EC2 deploy (SSM Run Command)
+    needs: test
+    # main 에 푸시(=dev→main PR 머지)되고 pytest 가 통과하면 AWS EC2(eatlog-app)에 배포한다
+    # (2026-09-06~ dev 푸시 배포 → 2026-09-21 main 푸시 배포로 전환).
+    # 방식: GitHub OIDC 로 IAM 역할 eatlog-github-deploy 를 빌려 SSM 문서 eatlog-deploy 를
+    #   보내고, EC2 가 ~/eatlog/deploy_service.sh 로 체크아웃→Parameter Store env 갱신→빌드→재기동
+    #   →헬스체크를 수행한다. 액세스 키·SSH 키를 GitHub 에 두지 않는다.
+    # 환경변수는 Parameter Store(/eatlog/ai/*)가 정본 — 이 워크플로에 값을 적지 않는다.
+    # 롤백: AWS 콘솔 Systems Manager → Run Command → eatlog-deploy 에 이전 sha 를 ref 로 실행.
+    # Innovation Sandbox 만료 등으로 AWS 쪽이 사라지면 이 잡만 실패하고 test 는 영향 없다.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # OIDC 토큰 발급 (AssumeRoleWithWebIdentity)
+      contents: read
+    env:
+      AWS_REGION: ap-northeast-2
+      INSTANCE_ID: i-0d96d7d601622339d
+      SERVICE: ai
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::779403607744:role/eatlog-github-deploy
+          aws-region: ap-northeast-2
+      - name: Send deploy command
+        id: send
+        run: |
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" --document-name eatlog-deploy \
+            --parameters "service=$SERVICE,ref=${{ github.sha }}" \
+            --comment "GitHub ${{ github.repository }}@${{ github.sha }}" \
+            --query Command.CommandId --output text)
+          echo "cmd_id=$CMD_ID" >> "$GITHUB_OUTPUT"
+          echo "command: $CMD_ID"
+      - name: Wait for result
+        run: |
+          CMD_ID="${{ steps.send.outputs.cmd_id }}"
+          STATUS=Pending
+          for i in $(seq 1 90); do
+            STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+                       --query Status --output text 2>/dev/null || echo Pending)
+            case "$STATUS" in Success|Failed|Cancelled|TimedOut) break ;; esac
+            sleep 10
+          done
+          echo "status: $STATUS"
+          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+            --query StandardOutputContent --output text
+          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+            --query StandardErrorContent --output text >&2
+          [ "$STATUS" = Success ]
+
+  deploy:
+    name: cloudtype deploy
+    needs: test
+    runs-on: ubuntu-latest
+    # 수동 실행에서만 배포한다 (파일 상단 🚨 참고 — 스펙이 운영 DB 연결을 되돌린다).
+    # 변수 미설정 = 아직 연동 안 함 → 배포를 건너뛴다 (기존 앱 설정 보호)
+    if: github.event_name == 'workflow_dispatch' && vars.CLOUDTYPE_PROJECT != ''
+    steps:
+      - uses: actions/checkout@v4
+      - name: Connect repository to cloudtype
+        uses: cloudtype-github-actions/connect@v1
+        with:
+          token: ${{ secrets.CLOUDTYPE_TOKEN }}
+          # 기본 GITHUB_TOKEN 은 배포키(admin:public_key) 권한이 없어 connect 가 실패한다.
+          # repo·workflow·admin:public_key 스코프의 PAT(classic)를 GHP_TOKEN 시크릿으로 넣는다.
+          ghtoken: ${{ secrets.GHP_TOKEN }}
+      - name: Deploy
+        uses: cloudtype-github-actions/deploy@v1
+        with:
+          token: ${{ secrets.CLOUDTYPE_TOKEN }}
+          # 형식: <스페이스>/<프로젝트> (예: 741u741/ebd-ai)
+          project: ${{ vars.CLOUDTYPE_PROJECT }}
+          stage: ${{ vars.CLOUDTYPE_STAGE }}
+          # 배포 스펙은 cloudtype 대시보드 서비스의 'CLI' 탭 내용을 옮긴 것이다.
+          # 이 스펙이 앱 설정을 통째로 덮어쓰므로, 대시보드에서 환경변수를 바꾸면
+          # 여기에도 반영해야 다음 배포에서 되돌아간다.
+          #
+          # 시크릿(Gemini API 키·DB 접속 문자열)은 스펙에 적지 않고 GitHub Secrets 에서
+          # 주입한다 — 리포에 평문으로 남기지 않기 위해서다. ai-server/.env 는 gitignore 라
+          # 값이 대시보드에만 있으니, 시크릿이 비면 그대로 유실된다.
+          yaml: |
+            name: ebd-ai
+            app: python@3.12
+            options:
+              ports: "8000"
+              start: uvicorn app.main:app --host 0.0.0.0
+              env:
+                - name: GEMINI_API_KEY
+                  value: ${{ secrets.GEMINI_API_KEY }}
+                - name: GEMINI_MODEL
+                  value: gemini-2.5-flash
+                - name: AI_TIMEOUT_SECONDS
+                  value: "30"
+                - name: IMAGE_DOWNLOAD_TIMEOUT_SECONDS
+                  value: "10"
+                # 🚨 이 시크릿은 2026-07-28 이후 갱신된 적이 없어 08-27 AWS 컷오버 이전
+                #    값(옛 cloudtype Postgres)을 담고 있다. 그대로 배포하면 cloudtype AI 가
+                #    RDS 에서 떨어져 나간다. RDS 값으로 갱신하기 전까지 자동 배포 금지
+                #    (파일 상단 참고).
+                - name: DATABASE_URL
+                  value: ${{ secrets.DATABASE_URL }}
+                # /internal/* 인증 토큰. BE 레포의 INTERNAL_TOKEN 시크릿과 **같은 값**
+                # 이어야 한다 — 값만 대시보드에 두면 한쪽만 바뀌어도 BE 호출이 전부
+                # 401 이 된다 (2026-08-01 추천 502 사고). 비면 검증 자체가 꺼진다.
+                - name: INTERNAL_TOKEN
+                  value: ${{ secrets.INTERNAL_TOKEN }}
+              buildenv: []
+            context:
+              git:
+                url: git@github.com:${{ github.repository }}.git
+                ref: ${{ github.ref }}
+                # 서버 코드가 하위 디렉터리에 있다. cloudtype 이 생성해 주는 Actions
+                # 스니펫에는 이 항목이 빠져 있어, 빼먹으면 저장소 루트에서 빌드하려다 실패한다.
+                path: ai-server

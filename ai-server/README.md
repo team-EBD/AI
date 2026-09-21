@@ -1,0 +1,137 @@
+# Eat로그 AI Server
+
+Backend 의 internal 요청을 받아 **Gemini API** 로 음식 분석 / 식사 추천을 수행하는 AI 서버.
+
+```
+Frontend → Backend → [AI Server] → Gemini API
+```
+
+AI Server 는 DB 에 **쓰기를 하지 않으며**, 대부분의 데이터는 Backend 가 요청으로 넘겨주고
+결과(및 `ai_call_log`)를 응답으로 돌려받아 Backend 가 DB 에 저장한다.
+단, **recommend 후보 메뉴만은 AI Server 가 DB(`nutrition_items`)를 읽기 전용으로 직접 조회**한다
+(팀 합의 변경). `DATABASE_URL` 필요.
+
+## 실행
+
+```bash
+cd ai-server
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+cp .env.example .env      # GEMINI_API_KEY 채우기
+uvicorn app.main:app --reload --port 8000
+```
+
+Docker:
+
+```bash
+docker build -t eatlog-ai .
+docker run --env-file .env -p 8000:8000 eatlog-ai
+```
+
+## 엔드포인트
+
+| Method | Path | 설명 |
+| --- | --- | --- |
+| GET  | `/health` | 헬스체크 → `{"status": "ok"}` |
+| POST | `/internal/analyze` | 이미지 URL → 음식 후보 분석 |
+| POST | `/internal/recommend` | 오늘 식단 요약 → 다음 끼니 추천 3개 |
+
+- OpenAPI 문서: `http://localhost:8000/docs`
+- 모든 응답에 `ai_call_log`(provider/model_name/task_type/status/latency_ms) 포함.
+- 실패 시에도 **HTTP 200** + `status: "failed"` 로 응답(명세서 권장). Backend 는 `status` 로 분기.
+
+### 실패 사유 (reason)
+
+| reason | 상황 |
+| --- | --- |
+| `ai_timeout` | Gemini 응답 timeout (기본 15초, `.env` 조정) |
+| `invalid_response` | JSON 파싱/구조 검증 실패 |
+| `provider_error` | 이미지 다운로드 실패 / Gemini API 오류 / (recommend) DB 조회 실패 |
+| `not_food` | 음식이 아닌 사진 (candidates 빈 배열) |
+| `no_candidates` | (recommend) 해당 카테고리에 DB 후보가 없음 |
+
+analyze 실패 응답에는 `fallback_action: "manual_food_search"` 가 함께 반환된다.
+
+## `[합의 필요]` 항목 결정 내역
+
+이 서버는 명세서의 결정 대기 항목을 아래와 같이 확정하여 구현했다. 팀 논의 시 참고.
+
+| 항목 | 결정 | 비고 |
+| --- | --- | --- |
+| 이미지 전달 방식 | **image_url** | AI Server 가 httpx 로 다운로드 후 Gemini 전달 |
+| 식습관 보정 계산 | **Backend 담당** | AI Server 는 raw 후보만 반환, `habit_adjusted` 없음 |
+| `user_eating_habits` 전달 | optional 수용·무시 | 보정이 Backend 이므로 AI Server 미사용 |
+| `daily_summary` | **Backend 가 계산해 전달** | recommend 요청으로 받음 |
+| recommend 후보(candidates) | **AI Server 가 DB 직접 조회** | `nutrition_items` 를 `preferred_category` 로 필터(읽기 전용) |
+| `ai_call_log` | **응답에 포함** | AI Server 는 DB 에 쓰지 않음 → Backend 가 저장 |
+| `fallback_action` | **AI Server 가 결정** | 실패 시 `manual_food_search` |
+| 실패 시 HTTP 상태 | **200 + status=failed** | 명세서 권장 |
+| Gemini 모델 | **최신 flash (`gemini-2.5-flash`)** | `.env` 로 교체 가능, `model_name` 에 반영 |
+| timeout 기준 | **15초** | `AI_TIMEOUT_SECONDS` 로 조정 |
+
+## Gemini 프롬프트 규칙
+
+- 응답은 JSON 만 (코드펜스 방어 파싱 포함).
+- 음식이 아니면 `candidates` 빈 배열 → `not_food`.
+- 음식명/메뉴명은 한국어, 후보 최대 3개.
+- 음식마다 `box_2d`(`[ymin, xmin, ymax, xmax]`, 0~1000)를 받아 정규화 좌표
+  `bbox`(`{x, y, width, height}`, 0.0~1.0)로 변환해 응답한다. 좌표를 못 얻으면
+  `bbox: null` (후보는 유지 — FE 는 오버레이만 생략).
+- 추천 응답에 진단/치료/처방 표현 금지 + `caution_text` 첨부.
+
+## 폴더 구조
+
+```
+ai-server/
+├── app/
+│   ├── main.py            # FastAPI 앱, /health, 라우터 등록
+│   ├── config.py          # .env 로드, Gemini 구성
+│   ├── routers/           # analyze.py, recommend.py
+│   ├── services/          # vision.py(분석), recommend.py(추천)
+│   ├── schemas/           # analyze.py, recommend.py (pydantic)
+│   └── utils/             # validator.py(JSON검증), logger.py(ai_call_log)
+├── .env / .env.example
+├── requirements.txt
+└── Dockerfile
+```
+
+## CI/CD (GitHub Actions → cloudtype)
+
+`.github/workflows/deploy.yml` 이 `dev` 푸시마다 pytest 를 돌리고, 저장소 변수
+`CLOUDTYPE_PROJECT` 가 설정돼 있으면 cloudtype 에 배포한다.
+
+필요한 설정 (Settings → Secrets and variables → Actions):
+
+| 종류 | 이름 | 값 |
+| --- | --- | --- |
+| Secret | `CLOUDTYPE_TOKEN` | cloudtype API 키 (BE 레포와 동일 값) |
+| Secret | `GHP_TOKEN` | GitHub PAT(classic), `repo`·`workflow`·`admin:public_key` (BE 와 동일 값) |
+| Secret | `GEMINI_API_KEY` | Gemini API 키 |
+| Secret | `DATABASE_URL` | `postgresql+psycopg://...` 운영 DB 접속 문자열 |
+| Variable | `CLOUDTYPE_PROJECT` | `741u741/ebd-ai` |
+| Variable | `CLOUDTYPE_STAGE` | `main` |
+
+`GHP_TOKEN` 은 `connect` 액션이 배포키를 등록하는 데 쓴다. 기본 `GITHUB_TOKEN` 은
+`admin:public_key` 권한이 없어 대체할 수 없다. PAT 만료 시 배포가 멈춘다.
+
+`CLOUDTYPE_PROJECT` 를 비워 두면 배포 잡은 건너뛰고 테스트만 돈다.
+
+### 배포 스펙 (중요)
+
+배포 스펙은 `.github/workflows/deploy.yml` 의 `yaml:` 블록에 인라인으로 들어 있다.
+cloudtype 대시보드 서비스의 **CLI 탭** 내용을 옮긴 것이며, **배포 시 앱 설정을 통째로
+덮어쓴다.** 따라서:
+
+- 대시보드에서 환경변수를 추가·변경하면 **이 블록에도 반영**해야 다음 배포에서 되돌아가지 않는다.
+- 시크릿(`GEMINI_API_KEY`·`DATABASE_URL`)은 스펙에 평문으로 적지 않고 GitHub Secrets 에서
+  주입한다. **값이 비면 그 환경변수가 빈 값으로 덮어써진다** — `ai-server/.env` 는 gitignore
+  라 복구 원본이 리포에 없으므로, **Secret 4개를 모두 등록한 뒤에** `CLOUDTYPE_PROJECT`
+  변수를 설정할 것.
+- `context.git.path: ai-server` 를 빼면 저장소 루트에서 빌드하려다 실패한다.
+  cloudtype 이 생성해 주는 Actions 스니펫에는 이 항목이 빠져 있으니 주의.
+
+### 더 단순한 대안
+cloudtype 대시보드에서 GitHub 저장소를 연결하고 배포 브랜치를 `dev` 로 지정하면
+GitHub Actions 없이도 자동 배포된다. GitHub Actions 를 쓰는 이유는 배포 전에 pytest 를
+게이트로 걸 수 있다는 점이며, 둘을 동시에 켜면 이중 배포가 되니 하나만 쓸 것.
