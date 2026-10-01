@@ -33,6 +33,8 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
       "confidence": 0.87,
       "estimated_serving": 1.0,
       "estimated_serving_g": 400,
+      "count": null,
+      "count_unit": null,
       "has_soup": true,
       "has_sauce": false,
       "box_2d": [120, 40, 620, 480],
@@ -93,6 +95,14 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
   1인분의 몇 배인지가 아니라 눈에 보이는 그대로의 양을 숫자로 적으세요.
   예: 피자 2조각이면 240, 밥 한 공기면 210, 라면 한 그릇이면 500.
   이 값이 가장 중요합니다 — 양을 가늠하기 어려우면 null 로 두세요.
+- count / count_unit 은 **셀 수 있는 단위가 있는 음식**일 때만 채웁니다: 사진에 보이는 전체 개수와 단위.
+  단위는 다음 여덟 가지만 씁니다.
+  · 낱개: 달걀·만두·꼬치·과일 한 알·송편 같은 간식 떡은 "개", 피자·케이크·수박은 "조각", 식빵·김·전은 "장", 김밥은 "줄"
+  · 용기: 밥은 "공기", 음료는 "잔"(커피·주스) / "캔" / "병"
+  예: 피자 8조각 → 8 / "조각", 삶은 달걀 2알 → 2 / "개", 김밥 한 줄 → 1 / "줄", 밥 두 공기 → 2 / "공기", 콜라 한 캔 → 1 / "캔".
+  다음은 둘 다 null 로 두세요(인분으로만 적습니다): 그릇·접시에 담긴 요리(찌개·국·면·볶음·샐러드), **치킨**,
+  **고기(삼겹살·갈비·스테이크)**, 그리고 **요리 속 재료는 세지 않습니다**(떡볶이의 떡, 탕수육·닭강정의 조각, 만두국의 만두).
+  개수를 적었으면 estimated_serving_g 는 그 개수 **전체**의 무게입니다(피자 8조각이면 800, 밥 두 공기면 420).
 - has_soup 는 그 음식에 국물이 있는지(찌개/국/탕/국물 있는 면 요리 등),
   has_sauce 는 소스·양념이 있는지(뿌려져 있거나 찍어 먹는 소스, 양념 범벅 등)를
   나타내는 불리언입니다. 확실하지 않으면 true 로 판단하세요.
@@ -279,6 +289,38 @@ def _clamp_serving(raw) -> float:
 SERVING_G_MIN, SERVING_G_MAX = 5.0, 3000.0
 
 
+# 낱개 단위 — 이 넷으로만 정규화한다. 비슷한 단위는 가까운 것으로 접고, 모르는 단위는 버린다(개수도 함께).
+# '마리'(치킨 한 마리)는 일부러 접지 않는다 — 치킨은 인분으로 다룬다(사용자 결정 2026-10-01).
+COUNT_UNITS = ("개", "조각", "장", "줄", "공기", "잔", "캔", "병")
+_COUNT_UNIT_ALIASES = {
+    "알": "개", "꼬치": "개", "봉": "개", "piece": "개", "pieces": "개", "pcs": "개",
+    "쪽": "조각", "피스": "조각", "slice": "조각", "slices": "조각",
+    "매": "장", "sheet": "장", "roll": "줄", "rolls": "줄",
+    "컵": "잔", "cup": "잔", "cups": "잔", "glass": "잔", "can": "캔", "cans": "캔", "bottle": "병", "bottles": "병",
+    # '그릇'·'접시'·'마리' 는 일부러 접지 않는다 — 그릇 요리·치킨은 인분으로 다룬다
+}
+COUNT_MAX = 50
+
+
+def _clamp_count(raw) -> int | None:
+    """사진 속 낱개 개수. 1~50 정수가 아니면 None."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = int(round(float(raw)))
+    except (TypeError, ValueError):
+        return None
+    return value if 1 <= value <= COUNT_MAX else None
+
+
+def _normalize_count_unit(raw) -> str | None:
+    if not isinstance(raw, str):
+        return None
+    unit = raw.strip().lower()
+    unit = _COUNT_UNIT_ALIASES.get(unit, unit)
+    return unit if unit in COUNT_UNITS else None
+
+
 def _clamp_serving_g(raw) -> float | None:
     """사진 속 절대량 추정치. 값이 없거나 상식 밖이면 None (BE 가 배수로 폴백)."""
     if raw is None:
@@ -315,6 +357,8 @@ def _normalize_candidates(raw: list, max_per_food: int = STANDARD_MAX_CANDIDATES
                 "confidence": _clamp_confidence(item.get("confidence", 0.0)),
                 "estimated_serving": _clamp_serving(item.get("estimated_serving", 1.0)),
                 "estimated_serving_g": _clamp_serving_g(item.get("estimated_serving_g")),
+                "count": _clamp_count(item.get("count")),
+                "count_unit": _normalize_count_unit(item.get("count_unit")),
                 "has_soup": _coerce_flag(item.get("has_soup")),
                 "has_sauce": _coerce_flag(item.get("has_sauce")),
                 "bbox": _normalize_bbox(item.get("box_2d")),
@@ -322,6 +366,8 @@ def _normalize_candidates(raw: list, max_per_food: int = STANDARD_MAX_CANDIDATES
             }
         except (KeyError, TypeError, ValueError):
             continue
+        if candidate["count"] is None or candidate["count_unit"] is None:
+            candidate["count"] = candidate["count_unit"] = None
         if food_index < 0:
             food_index = 0
         if food_index not in groups:

@@ -109,6 +109,12 @@ class Candidate(BaseModel):
     # BE 가 이 값을 매칭된 영양DB 항목의 기준량으로 나눠 배수를 다시 계산한다.
     # 추정 불가·구모델 응답은 None → BE 가 estimated_serving 을 그대로 쓴다.
     estimated_serving_g: Optional[float] = None
+    # 낱개로 셀 수 있는 음식이면 사진 속 전체 개수와 단위(개·조각·장·줄). 그릇·접시·컵에 담긴
+    # 음식(찌개·밥·면·음료)은 둘 다 None. BE 는 개수 음식만 g 을 영양DB 1인분 g 으로 나누고,
+    # 화면에는 "8조각" 처럼 개수를 보여 준다 — AI 의 1인분 개념과 DB 의 1인분이 달라서 생기던
+    # 피자 1판=1인분 같은 오차를 개수로 피한다.
+    count: Optional[int] = None
+    count_unit: Optional[Literal["개", "조각", "장", "줄", "공기", "잔", "캔", "병"]] = None
     # 국물/소스가 실제로 있는 음식인지 — FE 가 "국물 제외/소스 제외" 보정 버튼
     # 노출을 판단하는 데 쓴다. 판별 불가·구모델 응답은 True(버튼 노출 유지).
     has_soup: bool = True
