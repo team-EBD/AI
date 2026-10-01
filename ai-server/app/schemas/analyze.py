@@ -93,7 +93,7 @@ class Candidate(BaseModel):
     # 화면에는 "8조각" 처럼 개수를 보여 준다 — AI 의 1인분 개념과 DB 의 1인분이 달라서 생기던
     # 피자 1판=1인분 같은 오차를 개수로 피한다.
     count: Optional[int] = None
-    count_unit: Optional[Literal["개", "조각", "장", "줄"]] = None
+    count_unit: Optional[Literal["개", "조각", "장", "줄", "공기", "잔", "캔", "병"]] = None
     # 국물/소스가 실제로 있는 음식인지 — FE 가 "국물 제외/소스 제외" 보정 버튼
     # 노출을 판단하는 데 쓴다. 판별 불가·구모델 응답은 True(버튼 노출 유지).
     has_soup: bool = True

@@ -37,3 +37,13 @@ def test_chicken_is_not_counted_by_mari():
     """치킨은 인분으로 다룬다 — '마리'는 네 단위로 접지 않고 개수와 함께 버린다."""
     c = _normalize_candidates([_cand(food_name="치킨", count=1, count_unit="마리")])[0]
     assert (c["count"], c["count_unit"]) == (None, None)
+
+
+def test_container_units_rice_and_drinks():
+    """밥은 공기, 음료는 잔·캔·병 — 컵/cup/can/bottle 은 가까운 것으로 접는다."""
+    assert _normalize_candidates([_cand(food_name="공기밥", count=2, count_unit="공기")])[0]["count_unit"] == "공기"
+    assert _normalize_candidates([_cand(food_name="커피", count=1, count_unit="컵")])[0]["count_unit"] == "잔"
+    assert _normalize_candidates([_cand(food_name="콜라", count=1, count_unit="can")])[0]["count_unit"] == "캔"
+    assert _normalize_candidates([_cand(food_name="맥주", count=2, count_unit="bottle")])[0]["count_unit"] == "병"
+    # 그릇은 단위가 아니다 → 인분
+    assert _normalize_candidates([_cand(food_name="라면", count=1, count_unit="그릇")])[0]["count_unit"] is None
