@@ -30,6 +30,8 @@ PARSE_PROMPT = """당신은 식단 기록 도우미입니다. 사용자가 먹�
       "food_name": "김밥",
       "confidence": 0.95,
       "estimated_serving": 1.0,
+      "count": 1,
+      "count_unit": "줄",
       "has_soup": false,
       "has_sauce": false,
       "nutrition": {
@@ -45,6 +47,8 @@ PARSE_PROMPT = """당신은 식단 기록 도우미입니다. 사용자가 먹�
       "food_name": "라면",
       "confidence": 0.95,
       "estimated_serving": 0.5,
+      "count": null,
+      "count_unit": null,
       "has_soup": true,
       "has_sauce": false,
       "nutrition": {
@@ -75,6 +79,9 @@ PARSE_PROMPT = """당신은 식단 기록 도우미입니다. 사용자가 먹�
 - nutrition 은 그 음식 1인분(estimated_serving 이 아닌 1.0) 기준 추정치입니다.
   base_serving 은 기준량 설명, calories 는 kcal, carbs/protein/fat 은 g.
   일반적인 한국 음식 기준으로 현실적인 값을 추정하세요.
+- count / count_unit 은 문장에 낱개 수량이 있을 때만 채우세요 ("피자 3조각" → 3 / "조각", "달걀 두 개" → 2 / "개").
+  단위는 "개", "조각", "장", "줄" 네 가지만 씁니다(알·꼬치·마리 → "개", 쪽 → "조각", 김밥 → "줄").
+  그릇·공기·접시 단위("라면 한 그릇", "밥 반 공기")는 개수가 아니므로 둘 다 null.
 - estimated_serving_g 는 문장에 절대량이 **명시되었을 때만** 채우세요
   (예: "삼겹살 300g" → 300, "우유 500ml" → 500). 절대량이 명시되지 않은 경우
   ("반 개", "한 줄" 등)는 추측해서 채우지 말고 필드를 생략하세요.

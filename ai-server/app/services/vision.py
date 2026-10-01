@@ -33,6 +33,8 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
       "confidence": 0.87,
       "estimated_serving": 1.0,
       "estimated_serving_g": 400,
+      "count": null,
+      "count_unit": null,
       "has_soup": true,
       "has_sauce": false,
       "box_2d": [120, 40, 620, 480],
@@ -93,6 +95,11 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
   1인분의 몇 배인지가 아니라 눈에 보이는 그대로의 양을 숫자로 적으세요.
   예: 피자 2조각이면 240, 밥 한 공기면 210, 라면 한 그릇이면 500.
   이 값이 가장 중요합니다 — 양을 가늠하기 어려우면 null 로 두세요.
+- count / count_unit 은 **낱개로 셀 수 있는 음식**일 때만 채웁니다: 사진에 보이는 전체 개수와 단위.
+  단위는 "개", "조각", "장", "줄" 네 가지만 씁니다 — 달걀·만두·꼬치·치킨 조각은 "개", 피자·케이크·수박은 "조각",
+  식빵·김·전은 "장", 김밥은 "줄". 예: 피자 8조각 → 8 / "조각", 삶은 달걀 2알 → 2 / "개", 김밥 한 줄 → 1 / "줄".
+  그릇·접시·컵에 담긴 음식(찌개·국·밥·면·볶음·샐러드·음료)은 둘 다 null 로 두세요.
+  개수를 적었으면 estimated_serving_g 는 그 개수 **전체**의 무게입니다(피자 8조각이면 800).
 - has_soup 는 그 음식에 국물이 있는지(찌개/국/탕/국물 있는 면 요리 등),
   has_sauce 는 소스·양념이 있는지(뿌려져 있거나 찍어 먹는 소스, 양념 범벅 등)를
   나타내는 불리언입니다. 확실하지 않으면 true 로 판단하세요.
@@ -227,6 +234,35 @@ def _clamp_serving(raw) -> float:
 SERVING_G_MIN, SERVING_G_MAX = 5.0, 3000.0
 
 
+# 낱개 단위 — 이 넷으로만 정규화한다. 비슷한 단위는 가까운 것으로 접고, 모르는 단위는 버린다(개수도 함께).
+COUNT_UNITS = ("개", "조각", "장", "줄")
+_COUNT_UNIT_ALIASES = {
+    "알": "개", "꼬치": "개", "마리": "개", "봉": "개", "piece": "개", "pieces": "개", "pcs": "개",
+    "쪽": "조각", "피스": "조각", "slice": "조각", "slices": "조각",
+    "매": "장", "sheet": "장", "roll": "줄", "rolls": "줄",
+}
+COUNT_MAX = 50
+
+
+def _clamp_count(raw) -> int | None:
+    """사진 속 낱개 개수. 1~50 정수가 아니면 None."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = int(round(float(raw)))
+    except (TypeError, ValueError):
+        return None
+    return value if 1 <= value <= COUNT_MAX else None
+
+
+def _normalize_count_unit(raw) -> str | None:
+    if not isinstance(raw, str):
+        return None
+    unit = raw.strip().lower()
+    unit = _COUNT_UNIT_ALIASES.get(unit, unit)
+    return unit if unit in COUNT_UNITS else None
+
+
 def _clamp_serving_g(raw) -> float | None:
     """사진 속 절대량 추정치. 값이 없거나 상식 밖이면 None (BE 가 배수로 폴백)."""
     if raw is None:
@@ -262,6 +298,8 @@ def _normalize_candidates(raw: list) -> list[dict]:
                 "confidence": _clamp_confidence(item.get("confidence", 0.0)),
                 "estimated_serving": _clamp_serving(item.get("estimated_serving", 1.0)),
                 "estimated_serving_g": _clamp_serving_g(item.get("estimated_serving_g")),
+                "count": _clamp_count(item.get("count")),
+                "count_unit": _normalize_count_unit(item.get("count_unit")),
                 "has_soup": _coerce_flag(item.get("has_soup")),
                 "has_sauce": _coerce_flag(item.get("has_sauce")),
                 "bbox": _normalize_bbox(item.get("box_2d")),
@@ -269,6 +307,8 @@ def _normalize_candidates(raw: list) -> list[dict]:
             }
         except (KeyError, TypeError, ValueError):
             continue
+        if candidate["count"] is None or candidate["count_unit"] is None:
+            candidate["count"] = candidate["count_unit"] = None
         if food_index < 0:
             food_index = 0
         if food_index not in groups:
