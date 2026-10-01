@@ -31,3 +31,9 @@ def test_unknown_unit_or_bad_count_drops_both():
 
 def test_float_count_rounds_to_int():
     assert _normalize_candidates([_cand(count=2.0)])[0]["count"] == 2
+
+
+def test_chicken_is_not_counted_by_mari():
+    """치킨은 인분으로 다룬다 — '마리'는 네 단위로 접지 않고 개수와 함께 버린다."""
+    c = _normalize_candidates([_cand(food_name="치킨", count=1, count_unit="마리")])[0]
+    assert (c["count"], c["count_unit"]) == (None, None)
