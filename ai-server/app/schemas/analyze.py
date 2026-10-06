@@ -82,6 +82,32 @@ class CandidateNutrition(BaseModel):
     fat: float
 
 
+class NutritionPer100g(BaseModel):
+    calories: float
+    carbs: float
+    protein: float
+    fat: float
+
+
+class PackageInfo(BaseModel):
+    brand: Optional[str] = None
+    product_name: Optional[str] = None
+    variant: Optional[str] = None
+    size_text: Optional[str] = None
+    label_text: Optional[str] = None
+    size_g: Optional[float] = None  # size_text 에서 뽑은 g/ml
+
+
+class LabelInfo(BaseModel):
+    """검색 그라운딩으로 찾은 제품 표시 영양성분."""
+
+    product_name: str
+    per_100g: NutritionPer100g
+    package_size_g: Optional[float] = None
+    sources: list[str] = []
+    confidence: float = 0.0
+
+
 class BoundingBox(BaseModel):
     """사진 속 음식의 위치 (이미지 좌상단 기준 정규화 좌표 0.0~1.0).
 
@@ -113,7 +139,7 @@ class Candidate(BaseModel):
     # 음식(찌개·밥·면·음료)은 둘 다 None. BE 는 개수 음식만 g 을 영양DB 1인분 g 으로 나누고,
     # 화면에는 "8조각" 처럼 개수를 보여 준다 — AI 의 1인분 개념과 DB 의 1인분이 달라서 생기던
     # 피자 1판=1인분 같은 오차를 개수로 피한다.
-    count: Optional[int] = None
+    count: Optional[float] = None  # 0.5 단위 (반 개)
     count_unit: Optional[Literal["개", "조각", "장", "줄", "공기", "잔", "캔", "병"]] = None
     # 국물/소스가 실제로 있는 음식인지 — FE 가 "국물 제외/소스 제외" 보정 버튼
     # 노출을 판단하는 데 쓴다. 판별 불가·구모델 응답은 True(버튼 노출 유지).
@@ -123,6 +149,12 @@ class Candidate(BaseModel):
     bbox: Optional[BoundingBox] = None
     # 검증 실패 시 None (후보 자체는 유지 — vision._normalize_nutrition 참고)
     nutrition: Optional[CandidateNutrition] = None
+    # 100g(ml) 당 영양값 — BE 는 estimated_serving_g × 이 값으로 섭취 영양을 계산한다 (1인분 기준 없음)
+    nutrition_per_100g: Optional[NutritionPer100g] = None
+    # 포장 제품이면 포장 글자에서 읽은 브랜드·제품명·변형·용량. 요리는 None
+    package: Optional[PackageInfo] = None
+    # 포장 제품의 표시 영양성분을 검색으로 찾은 결과 (product_lookup). 못 찾으면 None
+    label: Optional[LabelInfo] = None
 
 
 class AICallLog(BaseModel):
