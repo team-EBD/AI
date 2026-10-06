@@ -99,6 +99,17 @@ def parse_lookup(text: str, sources: list[str] | None = None) -> dict | None:
             "sources": list(sources or []), "confidence": confidence}
 
 
+def has_read_evidence(package: dict | None) -> bool:
+    """포장 글자를 실제로 읽었다고 볼 근거 — 용량 표기나 인쇄 열량이 있어야 한다.
+
+    컵 옆면만 보이는 사진에서 모델이 모양·색으로 브랜드를 지어내는 일이 있었다(할리스 → 일리·바리스타룰스).
+    브랜드·제품명만 있고 숫자 표기가 하나도 안 읽혔으면 검색하지 않고 AI 추정값에 맡긴다 — 엉뚱한 제품 라벨이 끼는 것보다 낫다.
+    """
+    if not package:
+        return False
+    return bool(package.get("size_text")) or package.get("printed_kcal") is not None
+
+
 def package_key(package: dict) -> str:
     return " ".join(str(package.get(k) or "") for k in ("brand", "product_name", "variant", "size_text")).strip().lower()
 
@@ -141,7 +152,7 @@ async def attach_labels(candidates: list[dict]) -> None:
     for c in candidates:
         c.setdefault("label", None)
         pkg = c.get("package")
-        if pkg and (pkg.get("product_name") or pkg.get("brand")):
+        if pkg and (pkg.get("product_name") or pkg.get("brand")) and has_read_evidence(pkg):
             keys.setdefault(package_key(pkg), pkg)
     targets = list(keys.items())[: settings.product_lookup_max]
     if not targets:

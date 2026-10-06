@@ -96,6 +96,7 @@ class PackageInfo(BaseModel):
     size_text: Optional[str] = None
     label_text: Optional[str] = None
     size_g: Optional[float] = None  # size_text 에서 뽑은 g/ml
+    printed_kcal: Optional[float] = None  # 포장에 인쇄된 총 열량 ("9g(45 kcal)" → 45). 있으면 가장 정확한 값
 
 
 class LabelInfo(BaseModel):

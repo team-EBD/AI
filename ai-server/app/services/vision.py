@@ -86,6 +86,7 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
         "product_name": "Monster Energy Zero Sugar",
         "variant": "제로 슈거",
         "size_text": "355ml",
+        "printed_kcal": null,
         "label_text": "ZERO SUGAR 355ml"
       }
     }
@@ -133,12 +134,16 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
 - 개수(count)는 0.5 단위도 됩니다. 반 남은 베이글은 0.5, 한 개 반은 1.5. 사진에 보이는 양 그대로 세세요.
 - **포장 제품**(캔·병·봉지·컵·팩에 든 음료·과자·유제품·즉석식품 등)이면 package 를 채우세요.
   포장에 **인쇄된 글자를 그대로** 읽어 brand(브랜드), product_name(제품명, 영문이면 영문 그대로),
-  variant(제로·라이트·무가당·맛 등 변형), size_text(용량 표기, 예 "355ml", "98g")을 적고,
+  variant(제로·라이트·무가당·맛 등 변형), size_text(**사진 속 그 포장에 인쇄된** 용량, 예 "355ml", "9g")을 적고,
   label_text 에는 포장에서 읽은 핵심 글자를 짧게 적으세요. 글자가 안 보이면 그 칸은 null, 포장이 아니면 package 전체를 null.
+  한국 포장은 "9g(45 kcal)", "300mL(180kcal)", "총 내용량 190mL 105kcal"처럼 **용량과 열량을 작게 함께 인쇄**합니다.
+  이 줄을 꼭 찾아 size_text 와 printed_kcal(포장 전체 열량 숫자)에 적으세요 — 가장 정확한 값입니다.
+  size_text 는 기억이나 일반적인 크기로 채우지 말고 사진에서 읽힌 값만 적으세요(한 봉지 128g 제품의 낱개 9g 포장이 흔합니다).
+  포장 제품은 estimated_serving_g 를 비우지 마세요 — 용량 글자가 없으면 포장 크기를 보고 추정합니다.
   제품명은 유추하지 말고 **읽히는 것만** 적으세요 — 제로와 오리지널을 바꿔 적으면 열량이 10배 틀립니다.
   브랜드 글자가 사진에 보이지 않으면 brand 와 product_name 을 null 로 두세요. 컵·캔의 모양이나 색만 보고
   브랜드를 추측하면 안 됩니다(다른 회사 제품의 열량이 들어갑니다).
-- 사진에 **저울·계량컵 숫자**가 보이면 estimated_serving_g 는 그 숫자를 그대로 쓰세요(324 로 보이면 324, 32.4 가 아닙니다).
+- 사진에 **저울·계량컵 숫자**가 보이면 estimated_serving_g 는 그 숫자를 소수점까지 그대로 쓰세요(32.4 로 보이면 32.4).
   영양성분표가 사진에 보이면 nutrition_per_100g 을 그 표에서 읽어 적으세요(기준량이 1회 제공량이면 100g 당으로 환산).
 - 사진에 음식이 없거나 음식이 아니면 candidates 를 반드시 빈 배열([])로 반환하세요.
 """
@@ -241,6 +246,7 @@ def _normalize_per_100g(raw) -> dict | None:
 
 
 _PACKAGE_FIELDS = ("brand", "product_name", "variant", "size_text", "label_text")
+_PRINTED_KCAL_MAX = 5000
 _SIZE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(ml|mL|ML|l|L|g|kg)\b")
 
 
@@ -252,6 +258,12 @@ def _normalize_package(raw) -> dict | None:
     for key in _PACKAGE_FIELDS:
         value = raw.get(key)
         pkg[key] = str(value).strip()[:120] if isinstance(value, (str, int, float)) and str(value).strip() else None
+    printed = raw.get("printed_kcal")
+    try:
+        printed = float(printed) if printed is not None and not isinstance(printed, bool) else None
+    except (TypeError, ValueError):
+        printed = None
+    pkg["printed_kcal"] = printed if printed is not None and 0 <= printed <= _PRINTED_KCAL_MAX else None
     if not any(pkg.values()):
         return None
     pkg["size_g"] = None
@@ -356,10 +368,16 @@ SERVING_MIN, SERVING_MAX = 0.1, 10.0
 
 
 def _clamp_serving(raw) -> float:
-    value = float(raw)
+    """배수 추정치. 비어 오면 1.0 — 새 모델은 g 과 100g 당 값으로 계산하므로 배수가 없어도 후보를 버리지 않는다."""
+    if raw is None or isinstance(raw, bool):
+        return 1.0
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 1.0
     if not (SERVING_MIN <= value <= SERVING_MAX):
         return 1.0
-    return value
+    return round(value, 2)
 
 
 # 절대량(g/ml) 상식 범위 — 한 끼에 담기는 양. 벗어나면 신뢰 불가로 보고 None.

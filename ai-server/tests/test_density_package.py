@@ -87,3 +87,34 @@ async def test_attach_labels_tolerates_failure_and_disabled(monkeypatch, caplog)
     monkeypatch.setenv("PRODUCT_LOOKUP_ENABLED", "0")
     from app.config import get_settings
     get_settings.cache_clear() if hasattr(get_settings, "cache_clear") else None
+
+
+def test_printed_kcal_is_kept_and_validated():
+    [c] = _normalize_candidates([_cand(package={"product_name": "참쌀설병", "size_text": "9g", "printed_kcal": 45})])
+    assert c["package"]["size_g"] == 9.0 and c["package"]["printed_kcal"] == 45.0
+    [c] = _normalize_candidates([_cand(package={"product_name": "x", "printed_kcal": -5})])
+    assert c["package"]["printed_kcal"] is None
+    [c] = _normalize_candidates([_cand(package={"product_name": "x", "printed_kcal": "많음"})])
+    assert c["package"]["printed_kcal"] is None
+
+
+@pytest.mark.anyio
+async def test_attach_labels_skips_packages_without_read_evidence(monkeypatch):
+    """용량·인쇄 열량 표기가 하나도 안 읽힌 포장(브랜드만 추측)은 검색하지 않는다."""
+    calls = []
+
+    async def fake_grounded(model, contents):
+        calls.append(contents[0]); raise RuntimeError("should not be called")
+
+    monkeypatch.setattr(product_lookup.gemini_client, "generate_grounded", fake_grounded)
+    cands = _normalize_candidates([_cand(package={"brand": "일리", "product_name": "일리 카페 라떼", "variant": "카페 라떼"})])
+    await product_lookup.attach_labels(cands)
+    assert calls == [] and cands[0]["label"] is None
+    assert product_lookup.has_read_evidence({"brand": "x", "size_text": "355ml"}) is True
+    assert product_lookup.has_read_evidence({"brand": "x", "printed_kcal": 45}) is True
+
+
+def test_missing_estimated_serving_does_not_drop_candidate():
+    """블루베리 저울 사진: 모델이 estimated_serving 을 null 로 주자 후보가 통째로 사라져 not_food 가 됐다."""
+    [c] = _normalize_candidates([_cand(estimated_serving=None, count=None, count_unit=None, package=None)])
+    assert c["food_name"] and c["estimated_serving"] == 1.0 and c["estimated_serving_g"] == 355
