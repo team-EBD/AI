@@ -10,6 +10,7 @@
 실패 사유(reason): ai_timeout | invalid_response | provider_error | not_food
 """
 import asyncio
+import re
 import time
 
 import httpx
@@ -89,6 +90,12 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
 - 같은 음식에 대한 대체 예측(무엇인지 헷갈리는 경우)은 같은 food_index 로 묶고,
   가능성이 높은 순서로 음식 하나당 최대 __MAX_CANDIDATES__개까지만 포함하세요.
 - food_name 은 반드시 한국어로 작성하세요.
+- food_name 은 **음식 하나의 구체적인 이름**입니다. "밑반찬", "반찬", "음식", "간식", "음료", "과일", "채소",
+  "디저트"처럼 종류만 가리키는 이름은 쓰지 마세요. 무엇인지 확실하지 않으면 가장 가까운 구체 이름을 적고
+  confidence 를 낮추세요 (예: 밑반찬 → "배추김치" 0.5, "콩나물무침" 0.4).
+- 두 가지 이상의 음식을 "와/과/·/,/+"로 묶은 이름(예: "삶은 달걀과 요거트 블루베리")은 쓰지 마세요.
+  한 그릇·한 접시에 함께 놓여 있어도 서로 다른 음식(삶은 달걀, 그릭요거트, 블루베리)은 각각 다른 food_index 로
+  나누세요. 단, 하나의 요리(비빔밥·떡볶이·샐러드·볶음밥)는 재료로 쪼개지 말고 하나로 적습니다.
 - confidence 는 0.0~1.0 사이의 확신도입니다.
 - estimated_serving 은 1인분을 1.0 기준으로 한 추정 섭취량입니다.
 - estimated_serving_g 는 **사진에 실제로 담긴 양의 절대량**입니다(고체 g, 액체 ml).
@@ -142,6 +149,9 @@ _TASK_TYPE_BY_DEPTH = {
 
 # 기존 이름 하위 호환 (standard 기준 상한)
 MAX_PREDICTIONS_PER_FOOD = STANDARD_MAX_CANDIDATES
+# 같은 음식의 대체 예측(2위 이하) 중 이 값 미만은 버린다 — 0.08 짜리 '해물탕'이 바꾸기 목록에 뜨던 것.
+# 1위는 신뢰도와 무관하게 남긴다 (음식 자체를 잃으면 안 된다).
+ALT_MIN_CONFIDENCE = 0.2
 
 # 프롬프트에서 후보 상한 숫자가 들어갈 자리 (JSON 예시의 중괄호 때문에 format 대신 치환)
 _MAX_CANDIDATES_TOKEN = "__MAX_CANDIDATES__"
@@ -334,6 +344,18 @@ def _clamp_serving_g(raw) -> float | None:
     return round(value, 1)
 
 
+GENERIC_FOOD_NAMES = frozenset({"밑반찬", "반찬", "음식", "간식", "음료", "과일", "채소", "디저트", "요리", "메뉴"})
+_CONJUNCTION_NAME_RE = re.compile(r"\S+(와|과|및)\s+\S+|[·,+/]")
+
+
+def _warn_if_unspecific_name(name: str) -> None:
+    """총칭 이름·결합 이름이 프롬프트 규칙을 뚫고 나오면 경고 로그만 남긴다 (후처리로 고치면 영양값을 잃는다)."""
+    if name in GENERIC_FOOD_NAMES:
+        logger.warning("총칭 음식명: %s", name)
+    elif _CONJUNCTION_NAME_RE.search(name):
+        logger.warning("결합 음식명: %s", name)
+
+
 def _normalize_candidates(raw: list, max_per_food: int = STANDARD_MAX_CANDIDATES) -> list[dict]:
     """음식(food_index) 단위로 그룹핑해 정규화한다.
 
@@ -382,9 +404,13 @@ def _normalize_candidates(raw: list, max_per_food: int = STANDARD_MAX_CANDIDATES
     normalized: list[dict] = []
     for new_index, original_index in enumerate(order):
         group = groups[original_index]
+        # 1위(최고 신뢰도)는 유지하고, 나머지 대체 예측은 ALT_MIN_CONFIDENCE 이상만 남긴다
+        top = max(group, key=lambda c: c["confidence"])
+        group = [c for c in group if c is top or c["confidence"] >= ALT_MIN_CONFIDENCE]
         # 같은 음식의 대체 예측끼리는 위치가 같으므로, 하나라도 좌표가 있으면 공유한다
         shared_bbox = next((c["bbox"] for c in group if c["bbox"]), None)
         for candidate in group:
+            _warn_if_unspecific_name(candidate["food_name"])
             normalized.append(
                 {
                     **candidate,
