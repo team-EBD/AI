@@ -10,11 +10,13 @@
 실패 사유(reason): ai_timeout | invalid_response | provider_error | not_food
 """
 import asyncio
+import re
 import time
 
 import httpx
 
 from .. import gemini_client
+from . import product_lookup
 from ..config import get_settings
 from ..utils.logger import build_ai_call_log, logger
 from ..utils.validator import GeminiResponseError, extract_text, parse_json_response
@@ -38,13 +40,8 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
       "has_soup": true,
       "has_sauce": false,
       "box_2d": [120, 40, 620, 480],
-      "nutrition": {
-        "base_serving": "1인분(400g)",
-        "calories": 320,
-        "carbs": 18.5,
-        "protein": 22.0,
-        "fat": 16.0
-      }
+      "nutrition_per_100g": {"calories": 80, "carbs": 4.6, "protein": 5.5, "fat": 4.0},
+      "package": null
     },
     {
       "food_index": 0,
@@ -55,29 +52,42 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
       "has_soup": true,
       "has_sauce": false,
       "box_2d": [120, 40, 620, 480],
-      "nutrition": {
-        "base_serving": "1인분(400g)",
-        "calories": 250,
-        "carbs": 14.0,
-        "protein": 18.0,
-        "fat": 12.0
-      }
+      "nutrition_per_100g": {"calories": 62, "carbs": 3.5, "protein": 4.5, "fat": 3.0},
+      "package": null
     },
     {
       "food_index": 1,
       "food_name": "공기밥",
       "confidence": 0.95,
       "estimated_serving": 1.0,
-      "estimated_serving_g": 400,
+      "estimated_serving_g": 210,
+      "count": 1,
+      "count_unit": "공기",
       "has_soup": false,
       "has_sauce": false,
       "box_2d": [430, 520, 780, 900],
-      "nutrition": {
-        "base_serving": "1공기(210g)",
-        "calories": 310,
-        "carbs": 68.0,
-        "protein": 5.5,
-        "fat": 0.5
+      "nutrition_per_100g": {"calories": 148, "carbs": 32.4, "protein": 2.6, "fat": 0.2},
+      "package": null
+    },
+    {
+      "food_index": 2,
+      "food_name": "몬스터 에너지 제로 슈거",
+      "confidence": 0.9,
+      "estimated_serving": 1.0,
+      "estimated_serving_g": 355,
+      "count": 1,
+      "count_unit": "캔",
+      "has_soup": false,
+      "has_sauce": false,
+      "box_2d": [100, 700, 900, 980],
+      "nutrition_per_100g": {"calories": 1.4, "carbs": 0.3, "protein": 0, "fat": 0},
+      "package": {
+        "brand": "몬스터 에너지",
+        "product_name": "Monster Energy Zero Sugar",
+        "variant": "제로 슈거",
+        "size_text": "355ml",
+        "printed_kcal": null,
+        "label_text": "ZERO SUGAR 355ml"
       }
     }
   ]
@@ -89,6 +99,12 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
 - 같은 음식에 대한 대체 예측(무엇인지 헷갈리는 경우)은 같은 food_index 로 묶고,
   가능성이 높은 순서로 음식 하나당 최대 __MAX_CANDIDATES__개까지만 포함하세요.
 - food_name 은 반드시 한국어로 작성하세요.
+- food_name 은 **음식 하나의 구체적인 이름**입니다. "밑반찬", "반찬", "음식", "간식", "음료", "과일", "채소",
+  "디저트"처럼 종류만 가리키는 이름은 쓰지 마세요. 무엇인지 확실하지 않으면 가장 가까운 구체 이름을 적고
+  confidence 를 낮추세요 (예: 밑반찬 → "배추김치" 0.5, "콩나물무침" 0.4).
+- 두 가지 이상의 음식을 "와/과/·/,/+"로 묶은 이름(예: "삶은 달걀과 요거트 블루베리")은 쓰지 마세요.
+  한 그릇·한 접시에 함께 놓여 있어도 서로 다른 음식(삶은 달걀, 그릭요거트, 블루베리)은 각각 다른 food_index 로
+  나누세요. 단, 하나의 요리(비빔밥·떡볶이·샐러드·볶음밥)는 재료로 쪼개지 말고 하나로 적습니다.
 - confidence 는 0.0~1.0 사이의 확신도입니다.
 - estimated_serving 은 1인분을 1.0 기준으로 한 추정 섭취량입니다.
 - estimated_serving_g 는 **사진에 실제로 담긴 양의 절대량**입니다(고체 g, 액체 ml).
@@ -111,9 +127,24 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
   우하단을 (1000, 1000) 으로 정규화한 값입니다. 같은 food_index 의 대체
   예측들은 같은 음식을 가리키므로 동일한 box_2d 를 사용하세요.
   위치를 특정하기 어려우면 box_2d 를 생략하세요.
-- nutrition 은 해당 음식 1인분 기준의 영양 추정치입니다. base_serving 은
-  기준량 설명(예: "1인분(400g)"), calories 는 kcal, carbs/protein/fat 은 g 단위입니다.
-  일반적인 한국 음식 기준으로 현실적인 값을 추정하세요.
+- nutrition_per_100g 은 그 음식 **100g(액체는 100ml) 당** 영양값입니다 (calories 는 kcal, 나머지는 g).
+  1인분 기준이 아닙니다 — 1인분은 가게·사람마다 달라서 쓰지 않습니다. 실제 섭취 영양은
+  서버가 estimated_serving_g × 이 값으로 계산하므로 두 값 모두 신중히 적으세요.
+  포장 제품이면 표시된 영양성분표를 기억하는 대로, 요리는 일반적인 한국 음식 조리법 기준으로 적으세요.
+- 개수(count)는 0.5 단위도 됩니다. 반 남은 베이글은 0.5, 한 개 반은 1.5. 사진에 보이는 양 그대로 세세요.
+- **포장 제품**(캔·병·봉지·컵·팩에 든 음료·과자·유제품·즉석식품 등)이면 package 를 채우세요.
+  포장에 **인쇄된 글자를 그대로** 읽어 brand(브랜드), product_name(제품명, 영문이면 영문 그대로),
+  variant(제로·라이트·무가당·맛 등 변형), size_text(**사진 속 그 포장에 인쇄된** 용량, 예 "355ml", "9g")을 적고,
+  label_text 에는 포장에서 읽은 핵심 글자를 짧게 적으세요. 글자가 안 보이면 그 칸은 null, 포장이 아니면 package 전체를 null.
+  한국 포장은 "9g(45 kcal)", "300mL(180kcal)", "총 내용량 190mL 105kcal"처럼 **용량과 열량을 작게 함께 인쇄**합니다.
+  이 줄을 꼭 찾아 size_text 와 printed_kcal(포장 전체 열량 숫자)에 적으세요 — 가장 정확한 값입니다.
+  size_text 는 기억이나 일반적인 크기로 채우지 말고 사진에서 읽힌 값만 적으세요(한 봉지 128g 제품의 낱개 9g 포장이 흔합니다).
+  포장 제품은 estimated_serving_g 를 비우지 마세요 — 용량 글자가 없으면 포장 크기를 보고 추정합니다.
+  제품명은 유추하지 말고 **읽히는 것만** 적으세요 — 제로와 오리지널을 바꿔 적으면 열량이 10배 틀립니다.
+  브랜드 글자가 사진에 보이지 않으면 brand 와 product_name 을 null 로 두세요. 컵·캔의 모양이나 색만 보고
+  브랜드를 추측하면 안 됩니다(다른 회사 제품의 열량이 들어갑니다).
+- 사진에 **저울·계량컵 숫자**가 보이면 estimated_serving_g 는 그 숫자를 소수점까지 그대로 쓰세요(32.4 로 보이면 32.4).
+  영양성분표가 사진에 보이면 nutrition_per_100g 을 그 표에서 읽어 적으세요(기준량이 1회 제공량이면 100g 당으로 환산).
 - 사진에 음식이 없거나 음식이 아니면 candidates 를 반드시 빈 배열([])로 반환하세요.
 """
 
@@ -142,6 +173,9 @@ _TASK_TYPE_BY_DEPTH = {
 
 # 기존 이름 하위 호환 (standard 기준 상한)
 MAX_PREDICTIONS_PER_FOOD = STANDARD_MAX_CANDIDATES
+# 같은 음식의 대체 예측(2위 이하) 중 이 값 미만은 버린다 — 0.08 짜리 '해물탕'이 바꾸기 목록에 뜨던 것.
+# 1위는 신뢰도와 무관하게 남긴다 (음식 자체를 잃으면 안 된다).
+ALT_MIN_CONFIDENCE = 0.2
 
 # 프롬프트에서 후보 상한 숫자가 들어갈 자리 (JSON 예시의 중괄호 때문에 format 대신 치환)
 _MAX_CANDIDATES_TOKEN = "__MAX_CANDIDATES__"
@@ -196,6 +230,61 @@ async def _download_image(url: str, timeout: float, max_bytes: int) -> tuple[byt
         if not content_type.startswith("image/"):
             content_type = "image/jpeg"
         return resp.content, content_type
+
+
+def _normalize_per_100g(raw) -> dict | None:
+    """100g(ml) 당 영양값. 음수·비현실(1,000kcal 초과)·형식 오류면 None."""
+    if not isinstance(raw, dict):
+        return None
+    try:
+        values = {k: float(raw[k]) for k in ("calories", "carbs", "protein", "fat")}
+    except (KeyError, TypeError, ValueError):
+        return None
+    if any(v < 0 for v in values.values()) or values["calories"] > 1_000:
+        return None
+    return {k: round(v, 2) for k, v in values.items()}
+
+
+_PACKAGE_FIELDS = ("brand", "product_name", "variant", "size_text", "label_text")
+_PRINTED_KCAL_MAX = 5000
+_SIZE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(ml|mL|ML|l|L|g|kg)\b")
+
+
+def _normalize_package(raw) -> dict | None:
+    """포장 글자 정보. 전부 비어 있으면 None. size_text 에서 g/ml 숫자를 size_g 로 뽑는다."""
+    if not isinstance(raw, dict):
+        return None
+    pkg = {}
+    for key in _PACKAGE_FIELDS:
+        value = raw.get(key)
+        pkg[key] = str(value).strip()[:120] if isinstance(value, (str, int, float)) and str(value).strip() else None
+    printed = raw.get("printed_kcal")
+    try:
+        printed = float(printed) if printed is not None and not isinstance(printed, bool) else None
+    except (TypeError, ValueError):
+        printed = None
+    pkg["printed_kcal"] = printed if printed is not None and 0 <= printed <= _PRINTED_KCAL_MAX else None
+    if not any(pkg.values()):
+        return None
+    pkg["size_g"] = None
+    if pkg["size_text"]:
+        m = _SIZE_RE.search(pkg["size_text"])
+        if m:
+            amount = float(m.group(1)); unit = m.group(2).lower()
+            amount = amount * 1000 if unit in ("l", "kg") else amount
+            pkg["size_g"] = round(amount, 1) if 1 <= amount <= 5000 else None
+    return pkg
+
+
+def _nutrition_from_per_100g(per_100g: dict | None, grams: float | None) -> dict | None:
+    """구 BE 호환 — 보이는 양 전체의 영양값을 nutrition(1인분형)으로도 내려 준다."""
+    if not per_100g or not grams:
+        return None
+    factor = grams / 100.0
+    return {
+        "base_serving": f"보이는 양({grams:g}g)",
+        **{k: round(per_100g[k] * factor, 1) for k in ("calories", "carbs", "protein", "fat")},
+    }
 
 
 def _normalize_nutrition(raw) -> dict | None:
@@ -279,10 +368,16 @@ SERVING_MIN, SERVING_MAX = 0.1, 10.0
 
 
 def _clamp_serving(raw) -> float:
-    value = float(raw)
+    """배수 추정치. 비어 오면 1.0 — 새 모델은 g 과 100g 당 값으로 계산하므로 배수가 없어도 후보를 버리지 않는다."""
+    if raw is None or isinstance(raw, bool):
+        return 1.0
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 1.0
     if not (SERVING_MIN <= value <= SERVING_MAX):
         return 1.0
-    return value
+    return round(value, 2)
 
 
 # 절대량(g/ml) 상식 범위 — 한 끼에 담기는 양. 벗어나면 신뢰 불가로 보고 None.
@@ -300,17 +395,20 @@ _COUNT_UNIT_ALIASES = {
     # '그릇'·'접시'·'마리' 는 일부러 접지 않는다 — 그릇 요리·치킨은 인분으로 다룬다
 }
 COUNT_MAX = 50
+COUNT_STEP = 0.5  # AI 가 세는 최소 단위 — 사용자는 앱에서 자유롭게 고친다
 
 
-def _clamp_count(raw) -> int | None:
-    """사진 속 낱개 개수. 1~50 정수가 아니면 None."""
+def _clamp_count(raw) -> float | None:
+    """사진 속 개수. 0.5 단위로 반올림, 0.5~50 밖이면 None."""
     if raw is None or isinstance(raw, bool):
         return None
     try:
-        value = int(round(float(raw)))
+        value = round(float(raw) / COUNT_STEP) * COUNT_STEP
     except (TypeError, ValueError):
         return None
-    return value if 1 <= value <= COUNT_MAX else None
+    if not (COUNT_STEP <= value <= COUNT_MAX):
+        return None
+    return int(value) if value == int(value) else value
 
 
 def _normalize_count_unit(raw) -> str | None:
@@ -332,6 +430,18 @@ def _clamp_serving_g(raw) -> float | None:
     if not (SERVING_G_MIN <= value <= SERVING_G_MAX):
         return None
     return round(value, 1)
+
+
+GENERIC_FOOD_NAMES = frozenset({"밑반찬", "반찬", "음식", "간식", "음료", "과일", "채소", "디저트", "요리", "메뉴"})
+_CONJUNCTION_NAME_RE = re.compile(r"\S+(와|과|및)\s+\S+|[·,+/]")
+
+
+def _warn_if_unspecific_name(name: str) -> None:
+    """총칭 이름·결합 이름이 프롬프트 규칙을 뚫고 나오면 경고 로그만 남긴다 (후처리로 고치면 영양값을 잃는다)."""
+    if name in GENERIC_FOOD_NAMES:
+        logger.warning("총칭 음식명: %s", name)
+    elif _CONJUNCTION_NAME_RE.search(name):
+        logger.warning("결합 음식명: %s", name)
 
 
 def _normalize_candidates(raw: list, max_per_food: int = STANDARD_MAX_CANDIDATES) -> list[dict]:
@@ -362,8 +472,13 @@ def _normalize_candidates(raw: list, max_per_food: int = STANDARD_MAX_CANDIDATES
                 "has_soup": _coerce_flag(item.get("has_soup")),
                 "has_sauce": _coerce_flag(item.get("has_sauce")),
                 "bbox": _normalize_bbox(item.get("box_2d")),
-                "nutrition": _normalize_nutrition(item.get("nutrition")),
+                "nutrition_per_100g": _normalize_per_100g(item.get("nutrition_per_100g")),
+                "package": _normalize_package(item.get("package")),
             }
+            # 구 BE 가 읽는 nutrition(보이는 양 기준) — 모델이 직접 준 값이 있으면 그것, 없으면 100g 당 × g
+            candidate["nutrition"] = _normalize_nutrition(item.get("nutrition")) or _nutrition_from_per_100g(
+                candidate["nutrition_per_100g"], candidate["estimated_serving_g"]
+            )
         except (KeyError, TypeError, ValueError):
             continue
         if candidate["count"] is None or candidate["count_unit"] is None:
@@ -382,9 +497,13 @@ def _normalize_candidates(raw: list, max_per_food: int = STANDARD_MAX_CANDIDATES
     normalized: list[dict] = []
     for new_index, original_index in enumerate(order):
         group = groups[original_index]
+        # 1위(최고 신뢰도)는 유지하고, 나머지 대체 예측은 ALT_MIN_CONFIDENCE 이상만 남긴다
+        top = max(group, key=lambda c: c["confidence"])
+        group = [c for c in group if c is top or c["confidence"] >= ALT_MIN_CONFIDENCE]
         # 같은 음식의 대체 예측끼리는 위치가 같으므로, 하나라도 좌표가 있으면 공유한다
         shared_bbox = next((c["bbox"] for c in group if c["bbox"]), None)
         for candidate in group:
+            _warn_if_unspecific_name(candidate["food_name"])
             normalized.append(
                 {
                     **candidate,
@@ -482,6 +601,9 @@ async def analyze(
     )
     if not candidates:
         return fail("not_food")
+
+    # 5) 포장 제품은 표시 영양성분을 검색으로 찾아 붙인다 (실패해도 분석은 그대로 성공)
+    await product_lookup.attach_labels(candidates)
 
     return {
         "status": "success",
