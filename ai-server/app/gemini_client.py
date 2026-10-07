@@ -58,3 +58,20 @@ async def generate_json(model: str, contents: list):
     return await _get_client().aio.models.generate_content(
         model=model, contents=contents, config=config
     )
+
+
+async def generate_grounded(model: str, contents: list):
+    """구글 검색 그라운딩을 켠 생성 호출 — 포장 제품의 표시 영양성분을 실제로 찾아 읽게 한다.
+
+    검색 도구와 JSON 강제 모드는 함께 쓸 수 없어 응답은 텍스트다. 호출부가 JSON 부분만 뽑아 파싱한다.
+    응답 객체의 grounding_metadata 에 참고한 페이지 URL 이 들어 있다.
+    """
+    from google.genai import types
+
+    settings = get_settings()
+    config = types.GenerateContentConfig(
+        tools=[types.Tool(google_search=types.GoogleSearch())],
+        temperature=settings.gemini_temperature,
+        thinking_config=types.ThinkingConfig(thinking_budget=settings.gemini_thinking_budget),
+    )
+    return await _get_client().aio.models.generate_content(model=model, contents=contents, config=config)

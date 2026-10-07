@@ -27,6 +27,10 @@ class Settings:
         # (완전한 결정론 보장은 아니지만 재현성 분산을 크게 줄인다).
         self.gemini_temperature: float = float(os.getenv("GEMINI_TEMPERATURE", "0"))
         self.gemini_seed: int = int(os.getenv("GEMINI_SEED", "20260722"))
+        # 포장 제품 표시 영양성분 검색(그라운딩). 끄면 포장 글자만 읽고 값은 AI 추정으로 둔다
+        self.product_lookup_enabled: bool = os.getenv("PRODUCT_LOOKUP_ENABLED", "1") not in ("0", "false", "False")
+        self.product_lookup_timeout_seconds: float = float(os.getenv("PRODUCT_LOOKUP_TIMEOUT_SECONDS", "12"))
+        self.product_lookup_max: int = int(os.getenv("PRODUCT_LOOKUP_MAX", "3"))
         self.image_download_timeout_seconds: float = float(
             os.getenv("IMAGE_DOWNLOAD_TIMEOUT_SECONDS", "10")
         )
