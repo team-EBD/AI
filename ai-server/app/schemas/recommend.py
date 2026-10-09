@@ -20,6 +20,9 @@ class DailySummary(BaseModel):
     total_fat: float
     goal_calories: float
     goal_protein: float
+    # 사용자의 목표(선택, 2026-10-09): lose_weight / maintain / gain_muscle / gain_weight / eat_healthy.
+    # 후보 점수와 reason 에 반영한다. 없거나 모르는 값이면 기존 동작(목표 중립) 그대로다.
+    goal_type: Optional[str] = None
 
 
 class CandidateMenu(BaseModel):
