@@ -52,19 +52,36 @@ _MEAL_TIMING_CATEGORIES = {
 _TOP_N = 12
 
 
+# 목표(goal_type)별 표시 이름 — 프롬프트에 그대로 쓴다. 여기 없는 값은 목표 중립으로 다룬다.
+_GOAL_LABELS = {
+    "lose_weight": "체중 감량",
+    "maintain": "체중 유지",
+    "gain_muscle": "근육 늘리기",
+    "gain_weight": "체중 늘리기",
+    "eat_healthy": "건강한 식습관",
+}
+# 늘리는 목표는 남은 칼로리를 못 채우는 쪽이 문제다 — 초과·미달 감점을 뒤집지 않고 같은 무게로 본다.
+_GAIN_GOALS = {"gain_muscle", "gain_weight"}
+# 단백질을 더 챙겨야 하는 목표(감량 중 근손실 방지, 근육 증가)는 고단백 후보 가산을 키운다.
+_PROTEIN_FOCUS_GOALS = {"lose_weight", "gain_muscle"}
+
+
 def _score_candidate(cal: float, protein: float, db_category, gaps: dict, meal_timing: str) -> float:
     """남은 칼로리 적합도를 우선하고, 단백질 부족·끼니 패턴을 보조로 가산한 점수."""
     remaining = gaps["remaining_cal"]
+    goal_type = gaps.get("goal_type")
     if remaining <= 0:
         # 이미 목표 도달/초과 → 낮은 칼로리일수록 좋음
         score = -cal
+    elif goal_type in _GAIN_GOALS:
+        score = -abs(cal - remaining)
     else:
         over = max(0.0, cal - remaining)   # 초과분은 크게 감점(과식 방지)
         under = max(0.0, remaining - cal)  # 미달분은 약하게 감점
         score = -(over * 2.0 + under * 0.5)
     # 단백질 부족 시 고단백 후보 보조 가산
     if gaps["protein_gap"] > 0:
-        score += protein * 1.5
+        score += protein * (2.5 if goal_type in _PROTEIN_FOCUS_GOALS else 1.5)
     # 끼니 전형 카테고리면 소폭 가산
     if db_category in _MEAL_TIMING_CATEGORIES.get(meal_timing, set()):
         score += 30.0
@@ -87,6 +104,7 @@ def _nutrition_gaps(summary) -> dict:
     return {
         "remaining_cal": summary.goal_calories - summary.total_calories,
         "protein_gap": summary.goal_protein - summary.total_protein,
+        "goal_type": summary.goal_type,
     }
 
 
@@ -147,6 +165,12 @@ def _current_time_line(current_time) -> str:
     return f"\n- 현재 시각: {current_time} (KST)" if current_time else ""
 
 
+def _goal_line(goal_type) -> str:
+    """goal_type(선택) → [오늘 섭취 요약] 블록의 목표 줄. 없거나 모르는 값이면 빈 문자열."""
+    label = _GOAL_LABELS.get(goal_type)
+    return f"\n- 사용자의 목표: {label}" if label else ""
+
+
 def _build_prompt(req: RecommendRequest, candidates: list) -> str:
     s = req.daily_summary
 
@@ -165,7 +189,7 @@ def _build_prompt(req: RecommendRequest, candidates: list) -> str:
 - 칼로리: {s.total_calories} / 목표 {s.goal_calories} kcal
 - 탄수화물: {s.total_carbs} g
 - 단백질: {s.total_protein} / 목표 {s.goal_protein} g
-- 지방: {s.total_fat} g
+- 지방: {s.total_fat} g{_goal_line(s.goal_type)}
 
 [오늘 먹은 음식]
 {_history_block(req.user_history_context)}
@@ -198,6 +222,10 @@ def _build_prompt(req: RecommendRequest, candidates: list) -> str:
 - [요청 조건]에 현재 시각이 있으면 시간대를 고려해 reason 을 작성하세요.
   예: 21시 이후 늦은 시간이면 "늦은 시간이니 부담 없는 ○○이 좋아요"처럼 가벼운 선택을,
   이른 아침이면 속이 편한 선택을 권하세요. 현재 시각이 없으면 이 규칙은 무시하세요.
+- [오늘 섭취 요약]에 사용자의 목표가 있으면 reason 을 그 목표에 맞추세요.
+  체중 감량이면 포만감·가벼움·단백질을, 근육 늘리기면 단백질 보충을, 체중 늘리기면 든든함과
+  충분한 열량을, 건강한 식습관이면 균형과 채소를 근거로 드세요. 목표가 없으면 이 규칙은 무시하세요.
+  체중이 얼마나 빠진다·찐다는 식의 결과 약속은 하지 마세요.
 - 진단/치료/처방/의학적 효능 관련 표현(예: 질병을 치료, 처방, 증상 완화)은 절대 사용하지 마세요.
 - 생활 식단 참고 수준의 표현만 사용하세요.
 """

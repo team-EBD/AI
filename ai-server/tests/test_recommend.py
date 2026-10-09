@@ -256,3 +256,48 @@ def test_unknown_last_meal_type_uses_generic_label(client, set_candidates, set_g
     )
     _recommend(client, req)
     assert "직전 식사(직전 식사): 샌드위치" in stub.last_contents[0]
+
+
+# --- 사용자 목표(goal_type) 반영 ---
+
+def test_goal_type_raises_protein_bonus_for_protein_focus_goals():
+    # 단백질이 부족할 때, 감량·근육 목표는 고단백 후보를 더 밀어준다
+    neutral = _nutrition_gaps(_summary())
+    muscle = _nutrition_gaps(_summary(goal_type="gain_muscle"))
+    lean, rich = (150, 5), (150, 25)
+    gap_neutral = _score_candidate(*rich, "편의점", neutral, "dinner") - _score_candidate(
+        *lean, "편의점", neutral, "dinner"
+    )
+    gap_muscle = _score_candidate(*rich, "편의점", muscle, "dinner") - _score_candidate(
+        *lean, "편의점", muscle, "dinner"
+    )
+    assert gap_muscle > gap_neutral
+
+
+def test_gain_goal_does_not_favor_underfilling():
+    # 남은 칼로리 800: 기본은 300kcal(미달 500)이 1100kcal(초과 300)보다 낫지만,
+    # 늘리는 목표에서는 덜 채우는 쪽을 더 좋게 보지 않는다
+    neutral = _nutrition_gaps(_summary(total_calories=1200, total_protein=130))
+    gain = _nutrition_gaps(_summary(total_calories=1200, total_protein=130, goal_type="gain_weight"))
+    assert _score_candidate(300, 0, None, neutral, "") > _score_candidate(1100, 0, None, neutral, "")
+    assert _score_candidate(300, 0, None, gain, "") < _score_candidate(1100, 0, None, gain, "")
+
+
+def test_prompt_includes_goal_line(client, set_candidates, set_gemini):
+    set_candidates(DB_ROWS)
+    stub = set_gemini(text=_llm([{"name": "참치김밥", "reason": "x"}]))
+    req = dict(REQ, daily_summary=dict(REQ["daily_summary"], goal_type="lose_weight"))
+    body = _recommend(client, req).json()
+    assert body["status"] == "success"
+    assert "- 사용자의 목표: 체중 감량" in stub.last_contents[0]
+
+
+def test_prompt_omits_goal_line_when_missing_or_unknown(client, set_candidates, set_gemini):
+    """goal_type 미전송(기존 BE 계약)이거나 모르는 값이면 목표 줄이 없다."""
+    set_candidates(DB_ROWS)
+    stub = set_gemini(text=_llm([{"name": "참치김밥", "reason": "x"}]))
+    assert _recommend(client).json()["status"] == "success"
+    assert "사용자의 목표:" not in stub.last_contents[0]
+    req = dict(REQ, daily_summary=dict(REQ["daily_summary"], goal_type="keto"))
+    assert _recommend(client, req).json()["status"] == "success"
+    assert "사용자의 목표:" not in stub.last_contents[0]
