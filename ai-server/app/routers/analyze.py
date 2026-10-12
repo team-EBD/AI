@@ -30,7 +30,10 @@ AnalyzeResponse = Annotated[
 @router.post("/analyze", response_model=AnalyzeResponse)
 async def analyze(req: AnalyzeRequest) -> dict:
     # 성공/실패 모두 200 으로 반환 (Backend 가 status 로 분기)
-    return await vision.analyze(req.image_url, req.user_text, req.candidate_depth)
+    return await vision.analyze(
+        req.image_url, req.user_text, req.candidate_depth,
+        image_urls=req.image_urls, max_foods=req.max_foods,
+    )
 
 
 @router.post("/parse-meal", response_model=AnalyzeResponse)
