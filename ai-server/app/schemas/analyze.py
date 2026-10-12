@@ -10,7 +10,7 @@
 """
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class UserEatingHabits(BaseModel):
@@ -39,7 +39,16 @@ class ParseMealRequest(BaseModel):
 class AnalyzeRequest(BaseModel):
     # 스킴(http/https) 검증은 서비스 계층에서 수행한다.
     # pydantic 에서 거부하면 422 가 되어 200-failed(provider_error) 계약이 깨지기 때문.
-    image_url: str = Field(..., description="분석할 음식 이미지 URL (http/https 만 허용)")
+    image_url: str | None = Field(default=None, description="분석할 음식 이미지 URL (http/https 만 허용)")
+    image_urls: list[str] | None = Field(default=None, min_length=1, max_length=3)
+    max_foods: int = Field(default=5, ge=1, le=15)
+
+    @model_validator(mode="after")
+    def _require_image(self):
+        if self.image_urls is None and self.image_url is None:
+            raise ValueError("image_url 또는 image_urls 가 필요합니다.")
+        return self
+
     # 사진과 함께 적은 식사 설명 — 음식 식별·수량 힌트로 사용 (서비스에서 200자 절단)
     user_text: Optional[str] = Field(default=None, description="사용자가 함께 적은 식사 설명")
     user_eating_habits: Optional[UserEatingHabits] = Field(
@@ -127,6 +136,8 @@ class Candidate(BaseModel):
     # 후보들은 "같은 음식에 대한 대체 예측"이며 음식 하나당 최대 3개까지만 반환한다.
     # (요청이 candidate_depth="clarifier" 면 음식 하나당 최대 4개)
     food_index: int = 0
+    image_index: int = 0
+    is_in_image: bool = True  # 설명에만 등장한 음식은 False
     food_name: str
     confidence: float
     estimated_serving: float
@@ -176,5 +187,6 @@ class AnalyzeSuccessResponse(BaseModel):
 class AnalyzeFailedResponse(BaseModel):
     status: Literal["failed"]
     reason: str
+    failed_image_index: int | None = None
     fallback_action: str
     ai_call_log: AICallLog
