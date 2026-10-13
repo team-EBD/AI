@@ -94,8 +94,15 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
 }
 
 규칙:
+- 입력 이미지는 0부터 번호가 있습니다. 후보마다 image_index 에 그 음식이 보이는 이미지 번호를 넣으세요.
+  box_2d 는 반드시 그 이미지 기준입니다. food_index 는 전체 이미지에서 중복 없이 부여하세요.
+- 서로 다른 이미지의 같은 음식은 다른 접시(코스 요리)이므로 각각 별도 후보로 내세요.
+- 모든 이미지에 음식이 없을 때만 candidates 를 빈 배열로 반환하세요.
+  일부 이미지에 음식이 없어도 다른 이미지의 음식 후보는 반환하세요.
+- 사진에 보이는 음식은 is_in_image: true, 설명에만 등장한 음식은 is_in_image: false 와
+  image_index: 0 을 넣고 box_2d 는 생략하세요.
 - 사진에 서로 다른 음식이 여러 개 있으면, 각 음식마다 food_index 를 0부터 순서대로
-  부여하세요 (서로 다른 음식은 최대 5개까지).
+  부여하세요 (서로 다른 음식은 최대 __MAX_FOODS__개까지).
 - 같은 음식에 대한 대체 예측(무엇인지 헷갈리는 경우)은 같은 food_index 로 묶고,
   가능성이 높은 순서로 음식 하나당 최대 __MAX_CANDIDATES__개까지만 포함하세요.
 - food_name 은 반드시 한국어로 작성하세요.
@@ -145,7 +152,7 @@ ANALYZE_PROMPT = """당신은 음식 사진 분석 전문가입니다. 주어진
   브랜드를 추측하면 안 됩니다(다른 회사 제품의 열량이 들어갑니다).
 - 사진에 **저울·계량컵 숫자**가 보이면 estimated_serving_g 는 그 숫자를 소수점까지 그대로 쓰세요(32.4 로 보이면 32.4).
   영양성분표가 사진에 보이면 nutrition_per_100g 을 그 표에서 읽어 적으세요(기준량이 1회 제공량이면 100g 당으로 환산).
-- 사진에 음식이 없거나 음식이 아니면 candidates 를 반드시 빈 배열([])로 반환하세요.
+- 모든 이미지에 음식이 없을 때만 candidates 를 빈 배열([])로 반환하세요.
 """
 
 # 사진 하나에서 구분하는 음식 수 상한
@@ -199,10 +206,10 @@ def normalize_candidate_depth(raw) -> str:
     return DEPTH_STANDARD
 
 
-def _build_prompt(depth: str) -> str:
+def _build_prompt(depth: str, max_foods: int = MAX_FOODS) -> str:
     """후보 상한을 반영한 분석 프롬프트를 만든다."""
     max_candidates = _MAX_CANDIDATES_BY_DEPTH[depth]
-    prompt = ANALYZE_PROMPT.replace(_MAX_CANDIDATES_TOKEN, str(max_candidates))
+    prompt = ANALYZE_PROMPT.replace(_MAX_CANDIDATES_TOKEN, str(max_candidates)).replace("__MAX_FOODS__", str(max_foods))
     if depth == DEPTH_CLARIFIER:
         prompt += CLARIFIER_PROMPT_SUFFIX
     return prompt
@@ -444,25 +451,35 @@ def _warn_if_unspecific_name(name: str) -> None:
         logger.warning("결합 음식명: %s", name)
 
 
-def _normalize_candidates(raw: list, max_per_food: int = STANDARD_MAX_CANDIDATES) -> list[dict]:
+def _normalize_candidates(
+    raw: list, max_per_food: int = STANDARD_MAX_CANDIDATES,
+    max_foods: int = MAX_FOODS, image_count: int = 1,
+) -> list[dict]:
     """음식(food_index) 단위로 그룹핑해 정규화한다.
 
     - food_index 가 없거나 이상하면 0 으로 간주 (구모델/부분 응답 호환)
-    - 서로 다른 음식은 등장 순서대로 최대 MAX_FOODS 개
+    - 서로 다른 음식은 등장 순서대로 최대 max_foods 개
     - 같은 음식의 대체 예측은 최대 max_per_food 개 (candidate_depth 에 따라 3 또는 4)
       — 정렬·신뢰도 계산은 그대로이고 상한만 달라진다
     - 반환되는 food_index 는 0부터 연속되도록 재부여한다
     - bbox 는 같은 음식(food_index)의 다른 예측 값으로 보완한다 (같은 위치이므로)
     """
-    groups: dict[int, list[dict]] = {}
-    order: list[int] = []
+    groups: dict[tuple, list[dict]] = {}
+    order: list[tuple] = []
     for item in raw:
         if not isinstance(item, dict):
             continue
         try:
             raw_index = item.get("food_index", 0)
             food_index = int(raw_index) if not isinstance(raw_index, bool) else 0
+            image_index = item.get("image_index", 0)
+            if type(image_index) is not int or not 0 <= image_index < image_count:
+                logger.warning("image_index 범위 보정: %r -> 0", image_index)
+                image_index = 0
+            is_in_image = _coerce_flag(item.get("is_in_image"))
             candidate = {
+                "image_index": image_index,
+                "is_in_image": is_in_image,
                 "food_name": str(item["food_name"]),
                 "confidence": _clamp_confidence(item.get("confidence", 0.0)),
                 "estimated_serving": _clamp_serving(item.get("estimated_serving", 1.0)),
@@ -471,7 +488,7 @@ def _normalize_candidates(raw: list, max_per_food: int = STANDARD_MAX_CANDIDATES
                 "count_unit": _normalize_count_unit(item.get("count_unit")),
                 "has_soup": _coerce_flag(item.get("has_soup")),
                 "has_sauce": _coerce_flag(item.get("has_sauce")),
-                "bbox": _normalize_bbox(item.get("box_2d")),
+                "bbox": _normalize_bbox(item.get("box_2d")) if is_in_image else None,
                 "nutrition_per_100g": _normalize_per_100g(item.get("nutrition_per_100g")),
                 "package": _normalize_package(item.get("package")),
             }
@@ -485,14 +502,15 @@ def _normalize_candidates(raw: list, max_per_food: int = STANDARD_MAX_CANDIDATES
             candidate["count"] = candidate["count_unit"] = None
         if food_index < 0:
             food_index = 0
-        if food_index not in groups:
-            if len(order) >= MAX_FOODS:
+        group_key = (image_index, is_in_image, food_index)
+        if group_key not in groups:
+            if len(order) >= max_foods:
                 continue
-            groups[food_index] = []
-            order.append(food_index)
-        if len(groups[food_index]) >= max_per_food:
+            groups[group_key] = []
+            order.append(group_key)
+        if len(groups[group_key]) >= max_per_food:
             continue
-        groups[food_index].append(candidate)
+        groups[group_key].append(candidate)
 
     normalized: list[dict] = []
     for new_index, original_index in enumerate(order):
@@ -536,7 +554,8 @@ def _user_text_part(user_text: str) -> str:
 
 
 async def analyze(
-    image_url: str, user_text: str | None = None, candidate_depth: str | None = None
+    image_url: str | None, user_text: str | None = None, candidate_depth: str | None = None,
+    *, image_urls: list[str] | None = None, max_foods: int = MAX_FOODS,
 ) -> dict:
     settings = get_settings()
     started = time.perf_counter()
@@ -547,33 +566,35 @@ async def analyze(
     def elapsed_ms() -> int:
         return int((time.perf_counter() - started) * 1000)
 
-    def fail(reason: str) -> dict:
+    def fail(reason: str, failed_image_index: int | None = None) -> dict:
         return {
             "status": "failed",
             "reason": reason,
+            "failed_image_index": failed_image_index,
             "fallback_action": FALLBACK_ACTION,
             "ai_call_log": build_ai_call_log(
                 task_type, "failed", elapsed_ms(), model_name=settings.gemini_model
             ),
         }
 
-    # 0) URL 스킴 검증 — http/https 외 스킴은 다운로드 시도 없이 실패 처리
-    #    (422 대신 200-failed 계약 유지를 위해 pydantic 이 아닌 서비스에서 검증)
-    if not _is_allowed_url(image_url):
-        logger.warning("허용되지 않은 image_url 스킴: %s", image_url)
-        return fail("provider_error")
+    urls = image_urls if image_urls is not None else [image_url]
+    # 장별 기존 다운로드 제한을 유지하며 첫 실패에서 전체 요청을 중단한다.
+    parts = []
+    for index, url in enumerate(urls):
+        if not url or not _is_allowed_url(url):
+            logger.warning("허용되지 않은 이미지 스킴: image_index=%s", index)
+            return fail("provider_error", index)
+        try:
+            image_bytes, mime_type = await _download_image(
+                url, settings.image_download_timeout_seconds, settings.max_image_bytes
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("이미지 다운로드 실패: image_index=%s %s", index, exc)
+            return fail("provider_error", index)
+        parts.append(gemini_client.image_part(image_bytes, mime_type))
 
-    # 1) 이미지 다운로드 (크기 상한: MAX_IMAGE_BYTES)
-    try:
-        image_bytes, mime_type = await _download_image(
-            image_url, settings.image_download_timeout_seconds, settings.max_image_bytes
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("이미지 다운로드 실패: %s", exc)
-        return fail("provider_error")
-
-    # 2) Gemini Vision 호출 (JSON 강제 + thinking 제한 + timeout)
-    contents = [_build_prompt(depth), gemini_client.image_part(image_bytes, mime_type)]
+    # 모든 사진을 한 번의 Gemini 호출에 요청 순서대로 전달한다.
+    contents = [_build_prompt(depth, max_foods), *parts]
     cleaned_text = (user_text or "").strip()[:USER_TEXT_MAX_LENGTH]
     if cleaned_text:
         contents.append(_user_text_part(cleaned_text))
@@ -596,11 +617,15 @@ async def analyze(
         return fail(exc.reason)
 
     # 4) candidates 정규화 — 음식이 아니면 빈 배열 → not_food
+    raw_candidates = data.get("candidates")
+    if not isinstance(raw_candidates, list):
+        return fail("invalid_response")
     candidates = _normalize_candidates(
-        data.get("candidates", []) or [], _MAX_CANDIDATES_BY_DEPTH[depth]
+        raw_candidates, _MAX_CANDIDATES_BY_DEPTH[depth],
+        max_foods=max_foods, image_count=len(urls)
     )
     if not candidates:
-        return fail("not_food")
+        return fail("invalid_response" if raw_candidates else "not_food")
 
     # 5) 포장 제품은 표시 영양성분을 검색으로 찾아 붙인다 (실패해도 분석은 그대로 성공)
     await product_lookup.attach_labels(candidates)
