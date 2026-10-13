@@ -12,7 +12,9 @@ import time
 
 from .. import gemini_client
 from ..config import get_settings
+from ..schemas.model_response import PARSE_MEAL_RESPONSE_SCHEMA
 from ..utils.logger import build_ai_call_log, logger
+from ..utils.response_logging import log_response_failure
 from ..utils.validator import GeminiResponseError, extract_text, parse_json_response
 from .vision import FALLBACK_ACTION, _normalize_candidates
 
@@ -113,11 +115,14 @@ MAX_TEXT_LENGTH = 200
 async def parse(text: str, db_candidates: list | None = None) -> dict:
     settings = get_settings()
     started = time.perf_counter()
+    response = raw_text = raw_candidates = None
 
     def elapsed_ms() -> int:
         return int((time.perf_counter() - started) * 1000)
 
     def fail(reason: str) -> dict:
+        if reason in {"invalid_response", "not_food"}:
+            log_response_failure("parse-meal", reason, response, raw_text, raw_candidates)
         return {
             "status": "failed",
             "reason": reason,
@@ -139,7 +144,9 @@ async def parse(text: str, db_candidates: list | None = None) -> dict:
 
     try:
         response = await asyncio.wait_for(
-            gemini_client.generate_json(settings.gemini_model, contents),
+            gemini_client.generate_json(
+                settings.gemini_model, contents, response_json_schema=PARSE_MEAL_RESPONSE_SCHEMA,
+            ),
             timeout=settings.ai_timeout_seconds,
         )
     except asyncio.TimeoutError:
@@ -150,11 +157,13 @@ async def parse(text: str, db_candidates: list | None = None) -> dict:
         return fail("provider_error")
 
     try:
-        data = parse_json_response(extract_text(response))
+        raw_text = extract_text(response)
+        data = parse_json_response(raw_text)
     except GeminiResponseError as exc:
         return fail(exc.reason)
 
-    candidates = _normalize_candidates(data.get("candidates", []) or [])
+    raw_candidates = data.get("candidates")
+    candidates = _normalize_candidates(raw_candidates or [])
     if not candidates:
         return fail("not_food")
 

@@ -18,7 +18,9 @@ import httpx
 from .. import gemini_client
 from . import product_lookup
 from ..config import get_settings
+from ..schemas.model_response import ANALYZE_RESPONSE_SCHEMA
 from ..utils.logger import build_ai_call_log, logger
+from ..utils.response_logging import log_response_failure
 from ..utils.validator import GeminiResponseError, extract_text, parse_json_response
 
 FALLBACK_ACTION = "manual_food_search"
@@ -562,11 +564,14 @@ async def analyze(
     # 알 수 없는 값은 standard 로 (422 없이 200-계약 유지)
     depth = normalize_candidate_depth(candidate_depth)
     task_type = _TASK_TYPE_BY_DEPTH[depth]
+    response = raw_text = raw_candidates = None
 
     def elapsed_ms() -> int:
         return int((time.perf_counter() - started) * 1000)
 
     def fail(reason: str, failed_image_index: int | None = None) -> dict:
+        if reason in {"invalid_response", "not_food"}:
+            log_response_failure("analyze", reason, response, raw_text, raw_candidates)
         return {
             "status": "failed",
             "reason": reason,
@@ -600,7 +605,9 @@ async def analyze(
         contents.append(_user_text_part(cleaned_text))
     try:
         response = await asyncio.wait_for(
-            gemini_client.generate_json(settings.gemini_model, contents),
+            gemini_client.generate_json(
+                settings.gemini_model, contents, response_json_schema=ANALYZE_RESPONSE_SCHEMA,
+            ),
             timeout=settings.ai_timeout_seconds,
         )
     except asyncio.TimeoutError:
@@ -612,7 +619,8 @@ async def analyze(
 
     # 3) 파싱/검증
     try:
-        data = parse_json_response(extract_text(response))
+        raw_text = extract_text(response)
+        data = parse_json_response(raw_text)
     except GeminiResponseError as exc:
         return fail(exc.reason)
 

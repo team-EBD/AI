@@ -37,7 +37,7 @@ def image_part(data: bytes, mime_type: str):
     return types.Part.from_bytes(data=data, mime_type=mime_type)
 
 
-async def generate_json(model: str, contents: list):
+async def generate_json(model: str, contents: list, *, response_json_schema: dict | None = None):
     """JSON 강제 + thinking 예산 제한으로 생성 호출. 응답 객체를 반환한다.
 
     (타임아웃은 호출부가 asyncio.wait_for 로 감싼다 — 기존 구조 유지)
@@ -47,6 +47,7 @@ async def generate_json(model: str, contents: list):
     settings = get_settings()
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
+        response_json_schema=response_json_schema,
         # 같은 입력에 같은 출력이 나오도록 디코딩을 고정한다 —
         # 미설정 시 기본 temperature(1.0)로 매 호출 결과가 달라진다.
         temperature=settings.gemini_temperature,
