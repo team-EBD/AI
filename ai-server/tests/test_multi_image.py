@@ -20,9 +20,9 @@ def test_two_images_are_ordered_parts_in_one_call(client, set_gemini, monkeypatc
         {'food_name': '김밥', 'image_index': 1},
     ]}))
     from app import gemini_client
-    async def generate(model, contents):
+    async def generate(model, contents, **kwargs):
         calls.append(contents)
-        return await stub.generate_json(model, contents)
+        return await stub.generate_json(model, contents, **kwargs)
     monkeypatch.setattr(gemini_client, 'generate_json', generate)
     monkeypatch.setattr(gemini_client, 'image_part', lambda data, mime: data)
     result = client.post('/internal/analyze', json={

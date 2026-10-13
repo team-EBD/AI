@@ -22,9 +22,11 @@ class GeminiStub:
     text: str = ""
     exc: Optional[Exception] = None
     last_contents: Optional[list] = None
+    last_response_json_schema: Optional[dict] = None
 
-    async def generate_json(self, model, contents):
+    async def generate_json(self, model, contents, *, response_json_schema=None):
         self.last_contents = contents
+        self.last_response_json_schema = response_json_schema
         if self.exc is not None:
             raise self.exc
         return SimpleNamespace(text=self.text)
