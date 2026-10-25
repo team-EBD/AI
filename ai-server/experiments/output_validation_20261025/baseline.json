@@ -1,0 +1,460 @@
+{
+  "kind": "synthetic_output_contract_fault_injection",
+  "generated_at_utc": "2026-10-25T05:43:50.299569+00:00",
+  "base_revision": "9ce6e9ee029d5891f92b2488672404d861c37ec1",
+  "app_source_sha256": "cb8a66abbf9e438d72920432dd0032b5780511f39f441d83d8bd4805a47530aa",
+  "source": "git_archive",
+  "python": "3.13.3",
+  "packages": {
+    "fastapi": "0.115.6",
+    "pydantic": "2.10.4",
+    "pytest": "8.3.4",
+    "httpx": "0.28.1"
+  },
+  "live_model_calls": 0,
+  "production_db_queries": 0,
+  "limitations": "Hand-authored fault cases, not an independent sample or a photo/nutrition accuracy benchmark. No user outcome, prevalence, confidence calibration or model robustness inference.",
+  "passed": 15,
+  "total": 59,
+  "controls": {
+    "passed": 13,
+    "total": 13
+  },
+  "groups": {
+    "numeric": {
+      "passed": 8,
+      "total": 23
+    },
+    "ranking": {
+      "passed": 2,
+      "total": 5
+    },
+    "grounding": {
+      "passed": 3,
+      "total": 12
+    },
+    "recommendation": {
+      "passed": 1,
+      "total": 13
+    },
+    "error_contract": {
+      "passed": 1,
+      "total": 6
+    }
+  },
+  "cases": [
+    {
+      "id": "density_nan",
+      "group": "numeric",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "legacy_nan",
+      "group": "numeric",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "density_infinity",
+      "group": "numeric",
+      "control": false,
+      "passed": true,
+      "error_type": null
+    },
+    {
+      "id": "legacy_infinity",
+      "group": "numeric",
+      "control": false,
+      "passed": true,
+      "error_type": null
+    },
+    {
+      "id": "density_string_nan",
+      "group": "numeric",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "legacy_string_nan",
+      "group": "numeric",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "density_bool",
+      "group": "numeric",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "legacy_bool",
+      "group": "numeric",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "concentrated_liquid_per100ml",
+      "group": "numeric",
+      "control": true,
+      "passed": true,
+      "error_type": null
+    },
+    {
+      "id": "liquid_macro_sum_over100ml",
+      "group": "numeric",
+      "control": true,
+      "passed": true,
+      "error_type": null
+    },
+    {
+      "id": "infinite_count",
+      "group": "numeric",
+      "control": false,
+      "passed": false,
+      "error_type": "OverflowError"
+    },
+    {
+      "id": "infinite_confidence",
+      "group": "numeric",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "boolean_confidence",
+      "group": "numeric",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "null_confidence",
+      "group": "numeric",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "infinite_bbox",
+      "group": "numeric",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "food_name_null",
+      "group": "numeric",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "food_name_empty",
+      "group": "numeric",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "food_name_blank",
+      "group": "numeric",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "food_name_object",
+      "group": "numeric",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "valid_density",
+      "group": "numeric",
+      "control": true,
+      "passed": true,
+      "error_type": null
+    },
+    {
+      "id": "percent_confidence",
+      "group": "numeric",
+      "control": true,
+      "passed": true,
+      "error_type": null
+    },
+    {
+      "id": "small_package_grams",
+      "group": "numeric",
+      "control": true,
+      "passed": true,
+      "error_type": null
+    },
+    {
+      "id": "zero_calorie_density",
+      "group": "numeric",
+      "control": true,
+      "passed": true,
+      "error_type": null
+    },
+    {
+      "id": "late_best",
+      "group": "ranking",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "duplicate_names",
+      "group": "ranking",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "unsorted",
+      "group": "ranking",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "sorted_control",
+      "group": "ranking",
+      "control": true,
+      "passed": true,
+      "error_type": null
+    },
+    {
+      "id": "low_top_preserved",
+      "group": "ranking",
+      "control": true,
+      "passed": true,
+      "error_type": null
+    },
+    {
+      "id": "no_sources",
+      "group": "grounding",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "queries_only",
+      "group": "grounding",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "invalid_scheme",
+      "group": "grounding",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "missing_found",
+      "group": "grounding",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "string_false",
+      "group": "grounding",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "nan_density",
+      "group": "grounding",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "boolean_density",
+      "group": "grounding",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "zero_variant_mismatch",
+      "group": "grounding",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "unsweetened_variant_mismatch",
+      "group": "grounding",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "valid_source",
+      "group": "grounding",
+      "control": true,
+      "passed": true,
+      "error_type": null
+    },
+    {
+      "id": "zero_english_alias",
+      "group": "grounding",
+      "control": true,
+      "passed": true,
+      "error_type": null
+    },
+    {
+      "id": "unsweetened_english_alias",
+      "group": "grounding",
+      "control": true,
+      "passed": true,
+      "error_type": null
+    },
+    {
+      "id": "unsupported_reason_0",
+      "group": "recommendation",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "unsupported_reason_1",
+      "group": "recommendation",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "unsupported_reason_2",
+      "group": "recommendation",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "unsupported_reason_3",
+      "group": "recommendation",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "unsupported_reason_4",
+      "group": "recommendation",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "ordinary_reason",
+      "group": "recommendation",
+      "control": true,
+      "passed": true,
+      "error_type": null
+    },
+    {
+      "id": "over_budget_hint",
+      "group": "recommendation",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "row_null_calories",
+      "group": "recommendation",
+      "control": false,
+      "passed": false,
+      "error_type": "TypeError"
+    },
+    {
+      "id": "row_infinite_calories",
+      "group": "recommendation",
+      "control": false,
+      "passed": false,
+      "error_type": "OverflowError"
+    },
+    {
+      "id": "row_negative_calories",
+      "group": "recommendation",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "row_boolean_calories",
+      "group": "recommendation",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "row_null_name",
+      "group": "recommendation",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "row_negative_protein",
+      "group": "recommendation",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "parse_number",
+      "group": "error_contract",
+      "control": false,
+      "passed": false,
+      "error_type": "TypeError"
+    },
+    {
+      "id": "parse_object",
+      "group": "error_contract",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "parse_null",
+      "group": "error_contract",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "parse_string",
+      "group": "error_contract",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    },
+    {
+      "id": "parse_empty",
+      "group": "error_contract",
+      "control": true,
+      "passed": true,
+      "error_type": null
+    },
+    {
+      "id": "parse_invalid_candidates",
+      "group": "error_contract",
+      "control": false,
+      "passed": false,
+      "error_type": "AssertionError"
+    }
+  ]
+}

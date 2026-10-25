@@ -272,7 +272,7 @@ def test_nutrition_missing_or_invalid_kept_as_none(client, set_gemini, stub_down
     )
     body = _analyze(client).json()
     assert body["status"] == "success"
-    assert [c["food_name"] for c in body["candidates"]] == ["양꼬치", "오이무침", "제육볶음"]
+    assert {c["food_name"] for c in body["candidates"]} == {"양꼬치", "오이무침", "제육볶음"}
     assert all(c["nutrition"] is None for c in body["candidates"])
 
 
