@@ -52,8 +52,10 @@ def fetch_candidate_menus(categories: List[str], limit: int = 300) -> List[dict]
         return [
             {
                 "name": r.name,
-                "calories": float(r.calories),
-                "protein": float(r.protein),
+                # Validate each row in _select_candidates. A single NULL/NaN
+                # must not abort a batch of otherwise usable candidates.
+                "calories": r.calories,
+                "protein": r.protein,
                 "category": r.category,
             }
             for r in rows

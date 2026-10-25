@@ -63,12 +63,12 @@ def test_failed_response_logged_once_with_metadata(
 
 @pytest.mark.parametrize("route", ["analyze", "parse-meal"])
 @pytest.mark.parametrize("raw,vision_reason,text_reason,count", [
-    ('{}', "invalid_response", "not_food", None),
-    ('{"candidates":null}', "invalid_response", "not_food", None),
-    ('{"candidates":"bad"}', "invalid_response", "not_food", None),
-    ('{"candidates":[{}]}', "invalid_response", "not_food", 1),
+    ('{}', "invalid_response", "invalid_response", None),
+    ('{"candidates":null}', "invalid_response", "invalid_response", None),
+    ('{"candidates":"bad"}', "invalid_response", "invalid_response", None),
+    ('{"candidates":[{}]}', "invalid_response", "invalid_response", 1),
 ])
-def test_existing_failure_classification_and_food_count_preserved(
+def test_malformed_output_classified_and_food_count_preserved(
     client, set_gemini, stub_download, caplog, route, raw, vision_reason, text_reason, count,
 ):
     stub_download()

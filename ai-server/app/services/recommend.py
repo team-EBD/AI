@@ -10,13 +10,16 @@ AI Server 는 후보를 요청으로 받지 않고 DB 에서 직접 조회하되
 실패 사유(reason): ai_timeout | invalid_response | provider_error | no_candidates
 """
 import asyncio
+import re
 import time
+import unicodedata
 
 from .. import gemini_client
 from ..config import get_settings
 from ..db import fetch_candidate_menus
 from ..schemas.recommend import CandidateMenu, RecommendRequest
 from ..utils.logger import build_ai_call_log, logger
+from ..utils.numbers import finite_number
 from ..utils.validator import GeminiResponseError, extract_text, parse_json_response
 
 CAUTION_TEXT = "추천은 생활 식단 참고용이며 의학적 조언이 아닙니다."
@@ -93,8 +96,10 @@ def _make_hint(cal: float, protein: float, gaps: dict) -> str:
     remaining = gaps["remaining_cal"]
     if remaining > 0 and cal <= remaining:
         hint = "남은 칼로리에 잘 맞아요"
+    elif remaining > 0:
+        hint = "오늘 남은 목표 칼로리를 초과해요. 섭취량을 확인해 주세요"
     else:
-        hint = "칼로리 여유가 적어 가볍게 즐기기 좋아요"
+        hint = "오늘 목표 칼로리에 이미 도달했어요. 필요에 맞게 섭취량을 확인해 주세요"
     if gaps["protein_gap"] > 0 and protein >= 15:
         hint += ", 단백질 보충에도 좋아요"
     return hint
@@ -113,8 +118,14 @@ def _select_candidates(rows: list, summary, meal_timing: str, preferred_category
     gaps = _nutrition_gaps(summary)
     scored = []
     for r in rows:
-        cal = float(r["calories"])
-        protein = float(r.get("protein") or 0)
+        if not isinstance(r, dict):
+            continue
+        name = r.get("name")
+        cal = finite_number(r.get("calories"))
+        protein = finite_number(r.get("protein", 0))
+        if (not isinstance(name, str) or not name.strip() or cal is None
+                or not 0 <= cal <= 10000 or protein is None or not 0 <= protein <= 1000):
+            continue
         score = _score_candidate(cal, protein, r.get("category"), gaps, meal_timing)
         scored.append((score, r, cal, _make_hint(cal, protein, gaps)))
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -122,7 +133,7 @@ def _select_candidates(rows: list, summary, meal_timing: str, preferred_category
     seen_names: set[str] = set()
     result = []
     for _, r, cal, hint in scored:
-        name = str(r["name"])
+        name = r["name"].strip()
         if name in seen_names:
             continue
         seen_names.add(name)
@@ -231,6 +242,25 @@ def _build_prompt(req: RecommendRequest, candidates: list) -> str:
 """
 
 
+_MEDICAL_CLAIM_RE = re.compile(
+    r"진단|치료|처방|완치|증상.{0,8}(완화|개선)|혈당|혈압|당뇨|고혈압|암예방|질병|"
+    r"(감량|체중|살이|kg).{0,25}(보장|확실|반드시)|"
+    r"(보장|확실|반드시).{0,25}(감량|체중|kg)|"
+    r"cure|diagnos|prescri|treat.{0,20}(disease|diabet)|guarantee"
+)
+
+
+def _safe_reason(raw) -> str:
+    """Conservative wording guard; it is not a complete medical claim classifier."""
+    if not isinstance(raw, str):
+        return FALLBACK_REASON
+    reason = raw.strip()
+    compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", reason).casefold())
+    if not reason or len(reason) > 500 or _MEDICAL_CLAIM_RE.search(compact):
+        return FALLBACK_REASON
+    return reason
+
+
 def _normalize_recommendations(raw: list, candidates: list) -> list[dict]:
     """LLM 선택을 후보 목록으로 검증·복원하고, 부족하면 후보로 채워 항상 3개를 목표로 한다.
 
@@ -254,7 +284,7 @@ def _normalize_recommendations(raw: list, candidates: list) -> list[dict]:
         )
 
     # 1) LLM 이 고른 항목: 후보에 존재 + 미중복만 채택, 원본 값으로 복원
-    for item in raw:
+    for item in raw if isinstance(raw, list) else []:
         if len(result) >= 3:
             break
         if not isinstance(item, dict):
@@ -263,7 +293,7 @@ def _normalize_recommendations(raw: list, candidates: list) -> list[dict]:
         src = by_name.get(name)
         if src is None or name in used:
             continue
-        reason = str(item.get("reason", "")).strip() or FALLBACK_REASON
+        reason = _safe_reason(item.get("reason"))
         _add(src, reason)
 
     # 2) 부족분은 남은 후보를 순서대로 채움(고정 reason)
@@ -312,6 +342,8 @@ async def recommend(req: RecommendRequest) -> dict:
     candidates = _select_candidates(
         rows, req.daily_summary, req.meal_timing, req.preferred_category
     )
+    if not candidates:
+        return fail("no_candidates")
 
     # 3) LLM 으로 추려진 후보 중 선택 + reason 생성 (thinking 제한 — gemini_client)
     try:

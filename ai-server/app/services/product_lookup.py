@@ -11,10 +11,13 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import unicodedata
+from urllib.parse import urlsplit
 
 from .. import gemini_client
 from ..config import get_settings
 from ..utils.logger import logger
+from ..utils.numbers import finite_number, nutrition_values
 from ..utils.validator import extract_text
 
 LOOKUP_PROMPT = """다음 포장 식품의 **표시 영양성분표**를 웹에서 찾아 JSON 으로만 답하세요. 설명 문장은 쓰지 마세요.
@@ -36,7 +39,44 @@ LOOKUP_PROMPT = """다음 포장 식품의 **표시 영양성분표**를 웹에�
 """
 
 _JSON_RE = re.compile(r"\{.*\}", re.S)
-_NUTRIENTS = ("calories", "carbs", "protein", "fat")
+
+
+def _source_urls(sources: list[str] | None) -> list[str]:
+    """Search queries describe an attempt; only page URLs count as label evidence."""
+    urls = []
+    for source in sources or []:
+        if not isinstance(source, str):
+            continue
+        try:
+            parsed = urlsplit(source)
+            valid = parsed.scheme in {"https", "http"} and bool(parsed.hostname)
+        except ValueError:
+            valid = False
+        if valid and source not in urls:
+            urls.append(source)
+    return urls[:5]
+
+
+_VARIANT_MARKERS = (
+    ("제로", "zero", "무설탕", "sugarfree"),
+    ("무가당", "unsweetened", "noaddedsugar"),
+    ("라이트", "light", "lite"),
+)
+
+
+def _variant_matches(package: dict, result: dict) -> bool:
+    """Reject a missing explicit variant, without guessing brand transliterations.
+
+    This is a narrow consistency check, not proof of product identity.
+    """
+    def compact(value):
+        return re.sub(r"[\s_-]+", "", unicodedata.normalize("NFKC", value).casefold())
+
+    expected = compact(" ".join(str(package.get(key) or "") for key in ("product_name", "variant")))
+    actual = compact(result["product_name"])
+    return all(not any(marker in expected for marker in markers)
+               or any(marker in actual for marker in markers)
+               for markers in _VARIANT_MARKERS)
 
 
 def _parse_lenient(text: str) -> dict | None:
@@ -52,8 +92,11 @@ def _parse_lenient(text: str) -> dict | None:
 
 
 def _sources(response) -> list[str]:
-    """grounding_metadata 의 참고 페이지 URL. 페이지 URL 이 비어 오면(JSON 답변엔 인용 구간이 없어 흔하다)
-    실제로 돌린 검색어라도 남긴다 — 검색을 했다는 근거와 재현 수단이 된다."""
+    """grounding_metadata 의 참고 URL 또는 검색 시도 기록.
+
+    검색어만 있으면 parse_lookup 이 라벨로 채택하지 않는다. 실제로 검색을
+    시도했다는 사실만으로 영양표를 찾았다고 간주할 수 없기 때문이다.
+    """
     try:
         meta = response.candidates[0].grounding_metadata
     except (AttributeError, IndexError, TypeError):
@@ -70,33 +113,26 @@ def _sources(response) -> list[str]:
 
 def parse_lookup(text: str, sources: list[str] | None = None) -> dict | None:
     data = _parse_lenient(text)
-    if not data or data.get("found") is False:
+    source_urls = _source_urls(sources)
+    if not data or data.get("found") is not True or not source_urls:
         return None
-    per = data.get("per_100g")
-    if not isinstance(per, dict):
+    per_100g = nutrition_values(data.get("per_100g"), per_100g=True)
+    if per_100g is None:
         return None
-    try:
-        per_100g = {k: round(float(per[k]), 2) for k in _NUTRIENTS}
-    except (KeyError, TypeError, ValueError):
-        return None
-    if any(v < 0 for v in per_100g.values()) or per_100g["calories"] > 1_000:
-        return None
-    size = data.get("package_size_g")
-    try:
-        size_g = round(float(size), 1) if size is not None else None
-    except (TypeError, ValueError):
-        size_g = None
+    size_g = finite_number(data.get("package_size_g"))
     if size_g is not None and not (1 <= size_g <= 5000):
         size_g = None
-    try:
-        confidence = max(0.0, min(1.0, float(data.get("confidence", 0.5))))
-    except (TypeError, ValueError):
-        confidence = 0.5
-    name = str(data.get("product_name") or "").strip()[:120]
-    if not name:
+    if size_g is not None:
+        size_g = round(size_g, 1)
+    confidence = finite_number(data.get("confidence", 0.5))
+    if confidence is None:
         return None
-    return {"product_name": name, "per_100g": per_100g, "package_size_g": size_g,
-            "sources": list(sources or []), "confidence": confidence}
+    confidence = max(0.0, min(1.0, confidence))
+    name = data.get("product_name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    return {"product_name": name.strip()[:120], "per_100g": per_100g, "package_size_g": size_g,
+            "sources": source_urls, "confidence": confidence}
 
 
 def has_read_evidence(package: dict | None) -> bool:
@@ -136,6 +172,9 @@ async def lookup_product(package: dict) -> dict | None:
     except Exception:  # noqa: BLE001
         return None
     result = parse_lookup(text, _sources(response))
+    if result is not None and not _variant_matches(package, result):
+        logger.info("product_lookup rejected: variant mismatch")
+        return None
     if result is None:
         logger.info("product_lookup not found: %s", package_key(package))
     return result

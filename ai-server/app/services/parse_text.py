@@ -163,9 +163,11 @@ async def parse(text: str, db_candidates: list | None = None) -> dict:
         return fail(exc.reason)
 
     raw_candidates = data.get("candidates")
-    candidates = _normalize_candidates(raw_candidates or [])
+    if not isinstance(raw_candidates, list):
+        return fail("invalid_response")
+    candidates = _normalize_candidates(raw_candidates)
     if not candidates:
-        return fail("not_food")
+        return fail("invalid_response" if raw_candidates else "not_food")
 
     return {
         "status": "success",

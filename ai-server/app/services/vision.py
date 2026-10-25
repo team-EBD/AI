@@ -20,6 +20,7 @@ from . import product_lookup
 from ..config import get_settings
 from ..schemas.model_response import ANALYZE_RESPONSE_SCHEMA
 from ..utils.logger import build_ai_call_log, logger
+from ..utils.numbers import finite_number, nutrition_values
 from ..utils.response_logging import log_response_failure
 from ..utils.validator import GeminiResponseError, extract_text, parse_json_response
 
@@ -243,15 +244,7 @@ async def _download_image(url: str, timeout: float, max_bytes: int) -> tuple[byt
 
 def _normalize_per_100g(raw) -> dict | None:
     """100g(ml) 당 영양값. 음수·비현실(1,000kcal 초과)·형식 오류면 None."""
-    if not isinstance(raw, dict):
-        return None
-    try:
-        values = {k: float(raw[k]) for k in ("calories", "carbs", "protein", "fat")}
-    except (KeyError, TypeError, ValueError):
-        return None
-    if any(v < 0 for v in values.values()) or values["calories"] > 1_000:
-        return None
-    return {k: round(v, 2) for k, v in values.items()}
+    return nutrition_values(raw, per_100g=True)
 
 
 _PACKAGE_FIELDS = ("brand", "product_name", "variant", "size_text", "label_text")
@@ -267,13 +260,9 @@ def _normalize_package(raw) -> dict | None:
     for key in _PACKAGE_FIELDS:
         value = raw.get(key)
         pkg[key] = str(value).strip()[:120] if isinstance(value, (str, int, float)) and str(value).strip() else None
-    printed = raw.get("printed_kcal")
-    try:
-        printed = float(printed) if printed is not None and not isinstance(printed, bool) else None
-    except (TypeError, ValueError):
-        printed = None
+    printed = finite_number(raw.get("printed_kcal"))
     pkg["printed_kcal"] = printed if printed is not None and 0 <= printed <= _PRINTED_KCAL_MAX else None
-    if not any(pkg.values()):
+    if not any(value is not None for value in pkg.values()):
         return None
     pkg["size_g"] = None
     if pkg["size_text"]:
@@ -299,24 +288,10 @@ def _nutrition_from_per_100g(per_100g: dict | None, grams: float | None) -> dict
 def _normalize_nutrition(raw) -> dict | None:
     """LLM 영양 추정치 검증. 형식이 어긋나면 후보는 유지하되 nutrition 만
     버린다(None) — BE 가 영양 DB 매칭으로 보완할 수 있다."""
-    if not isinstance(raw, dict):
+    values = nutrition_values(raw)
+    if values is None:
         return None
-    try:
-        nutrition = {
-            "base_serving": str(raw.get("base_serving") or "1인분"),
-            "calories": float(raw["calories"]),
-            "carbs": float(raw["carbs"]),
-            "protein": float(raw["protein"]),
-            "fat": float(raw["fat"]),
-        }
-    except (KeyError, TypeError, ValueError):
-        return None
-    if any(nutrition[key] < 0 for key in ("calories", "carbs", "protein", "fat")):
-        return None
-    # 비현실적 추정치 방어 (1인분 10,000 kcal 초과 등)
-    if nutrition["calories"] > 10_000:
-        return None
-    return nutrition
+    return {"base_serving": str(raw.get("base_serving") or "1인분"), **values}
 
 
 def _normalize_bbox(raw) -> dict | None:
@@ -327,11 +302,8 @@ def _normalize_bbox(raw) -> dict | None:
     """
     if not isinstance(raw, (list, tuple)) or len(raw) != 4:
         return None
-    try:
-        values = [float(v) for v in raw]
-    except (TypeError, ValueError):
-        return None
-    if any(v != v for v in values):  # NaN
+    values = [finite_number(v) for v in raw]
+    if any(v is None for v in values):
         return None
     # 0~1 스케일로 답한 경우(모든 값이 1 이하)를 제외하고 1000 스케일로 본다
     scale = 1.0 if max(values) <= 1.0 else 1000.0
@@ -366,7 +338,9 @@ def _clamp_confidence(raw) -> float:
     있고, 범위 밖 값이 그대로 나가면 BE 저장 컬럼(Numeric(5,4)) overflow 로
     분석 요청 전체가 500 이 된다.
     """
-    value = float(raw)
+    value = finite_number(raw)
+    if value is None:
+        return 0.0
     if 1.0 < value <= 100.0:  # 퍼센트 표기로 판단하고 복원
         value /= 100.0
     return min(1.0, max(0.0, value))
@@ -378,13 +352,8 @@ SERVING_MIN, SERVING_MAX = 0.1, 10.0
 
 def _clamp_serving(raw) -> float:
     """배수 추정치. 비어 오면 1.0 — 새 모델은 g 과 100g 당 값으로 계산하므로 배수가 없어도 후보를 버리지 않는다."""
-    if raw is None or isinstance(raw, bool):
-        return 1.0
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return 1.0
-    if not (SERVING_MIN <= value <= SERVING_MAX):
+    value = finite_number(raw)
+    if value is None or not (SERVING_MIN <= value <= SERVING_MAX):
         return 1.0
     return round(value, 2)
 
@@ -409,12 +378,10 @@ COUNT_STEP = 0.5  # AI 가 세는 최소 단위 — 사용자는 앱에서 자�
 
 def _clamp_count(raw) -> float | None:
     """사진 속 개수. 0.5 단위로 반올림, 0.5~50 밖이면 None."""
-    if raw is None or isinstance(raw, bool):
+    value = finite_number(raw)
+    if value is None or value < 0 or value > COUNT_MAX:
         return None
-    try:
-        value = round(float(raw) / COUNT_STEP) * COUNT_STEP
-    except (TypeError, ValueError):
-        return None
+    value = round(value / COUNT_STEP) * COUNT_STEP
     if not (COUNT_STEP <= value <= COUNT_MAX):
         return None
     return int(value) if value == int(value) else value
@@ -430,13 +397,8 @@ def _normalize_count_unit(raw) -> str | None:
 
 def _clamp_serving_g(raw) -> float | None:
     """사진 속 절대량 추정치. 값이 없거나 상식 밖이면 None (BE 가 배수로 폴백)."""
-    if raw is None:
-        return None
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return None
-    if not (SERVING_G_MIN <= value <= SERVING_G_MAX):
+    value = finite_number(raw)
+    if value is None or not (SERVING_G_MIN <= value <= SERVING_G_MAX):
         return None
     return round(value, 1)
 
@@ -461,19 +423,25 @@ def _normalize_candidates(
 
     - food_index 가 없거나 이상하면 0 으로 간주 (구모델/부분 응답 호환)
     - 서로 다른 음식은 등장 순서대로 최대 max_foods 개
-    - 같은 음식의 대체 예측은 최대 max_per_food 개 (candidate_depth 에 따라 3 또는 4)
-      — 정렬·신뢰도 계산은 그대로이고 상한만 달라진다
+    - 같은 음식의 대체 예측은 신뢰도순·동일 이름 제거 후 최대 max_per_food 개
+      (candidate_depth 에 따라 3 또는 4)
     - 반환되는 food_index 는 0부터 연속되도록 재부여한다
     - bbox 는 같은 음식(food_index)의 다른 예측 값으로 보완한다 (같은 위치이므로)
     """
+    if not isinstance(raw, list):
+        return []
     groups: dict[tuple, list[dict]] = {}
     order: list[tuple] = []
     for item in raw:
         if not isinstance(item, dict):
             continue
+        name = item.get("food_name")
+        if not isinstance(name, str) or not name.strip():
+            continue
         try:
             raw_index = item.get("food_index", 0)
-            food_index = int(raw_index) if not isinstance(raw_index, bool) else 0
+            index_number = finite_number(raw_index)
+            food_index = int(index_number) if index_number is not None else 0
             image_index = item.get("image_index", 0)
             if type(image_index) is not int or not 0 <= image_index < image_count:
                 logger.warning("image_index 범위 보정: %r -> 0", image_index)
@@ -482,7 +450,7 @@ def _normalize_candidates(
             candidate = {
                 "image_index": image_index,
                 "is_in_image": is_in_image,
-                "food_name": str(item["food_name"]),
+                "food_name": name.strip(),
                 "confidence": _clamp_confidence(item.get("confidence", 0.0)),
                 "estimated_serving": _clamp_serving(item.get("estimated_serving", 1.0)),
                 "estimated_serving_g": _clamp_serving_g(item.get("estimated_serving_g")),
@@ -498,7 +466,7 @@ def _normalize_candidates(
             candidate["nutrition"] = _normalize_nutrition(item.get("nutrition")) or _nutrition_from_per_100g(
                 candidate["nutrition_per_100g"], candidate["estimated_serving_g"]
             )
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             continue
         if candidate["count"] is None or candidate["count_unit"] is None:
             candidate["count"] = candidate["count_unit"] = None
@@ -510,18 +478,26 @@ def _normalize_candidates(
                 continue
             groups[group_key] = []
             order.append(group_key)
-        if len(groups[group_key]) >= max_per_food:
-            continue
         groups[group_key].append(candidate)
 
     normalized: list[dict] = []
     for new_index, original_index in enumerate(order):
-        group = groups[original_index]
+        all_candidates = sorted(groups[original_index], key=lambda c: c["confidence"], reverse=True)
+        # Deduplicate within this food only. Two plates/images may share a name.
+        seen_names = set()
+        group = []
+        for candidate in all_candidates:
+            if candidate["food_name"] in seen_names:
+                continue
+            seen_names.add(candidate["food_name"])
+            group.append(candidate)
+            if len(group) >= max_per_food:
+                break
         # 1위(최고 신뢰도)는 유지하고, 나머지 대체 예측은 ALT_MIN_CONFIDENCE 이상만 남긴다
         top = max(group, key=lambda c: c["confidence"])
         group = [c for c in group if c is top or c["confidence"] >= ALT_MIN_CONFIDENCE]
         # 같은 음식의 대체 예측끼리는 위치가 같으므로, 하나라도 좌표가 있으면 공유한다
-        shared_bbox = next((c["bbox"] for c in group if c["bbox"]), None)
+        shared_bbox = next((c["bbox"] for c in all_candidates if c["bbox"]), None)
         for candidate in group:
             _warn_if_unspecific_name(candidate["food_name"])
             normalized.append(

@@ -83,8 +83,8 @@ def test_invalid_image_index_falls_back_to_zero(client, set_gemini, stub_downloa
 def test_food_and_alternative_limits(client, set_gemini, stub_download, count, depth, cap):
     stub_download()
     set_gemini(text=json.dumps({'candidates': [
-        {'food_name': f'음식{i}', 'food_index': i, 'confidence': .9, 'image_index': i % count}
-        for i in range(16) for _ in range(5)
+        {'food_name': f'음식{i} 후보{alternative}', 'food_index': i, 'confidence': .9, 'image_index': i % count}
+        for i in range(16) for alternative in range(5)
     ]}))
     result = client.post('/internal/analyze', json={
         'image_urls': (URLS + ['http://img/third'])[:count], 'max_foods': count * 5, 'candidate_depth': depth,
