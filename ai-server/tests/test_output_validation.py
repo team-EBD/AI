@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from experiments.output_validation_20261025.cases import CASES
+from output_validation_cases import CASES
 
 
 @pytest.mark.parametrize("case", CASES, ids=[c["id"] for c in CASES])

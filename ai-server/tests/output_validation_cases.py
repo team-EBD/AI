@@ -1,7 +1,9 @@
 """Synthetic fault injections and normal controls; no network, production data or model key.
 
 Each check encodes an output contract, rather than a target food recognition label.
-The same cases run before/after changes and in the regression suite.
+The original before/after experiment is archived in the private personal repo:
+https://github.com/JH201421228/eatlog-validation-lab/tree/main/experiments/contracts/ai_output_validation
+These cases remain here to prevent regressions in the service.
 """
 import asyncio
 import json
